@@ -893,7 +893,7 @@ def generate_script_from_video(transcript):
     {{
         "new_video_title": "Your catchy video title",
         "keywords": ["keyword1", "keyword2", "keyword3"],
-        "script": "\\n- Introductory hook to grab attention...\\n- Leading phrase and first key point...\\n- Transitional phrase and second key point...\\n- Concluding thought and intriguing question."
+        "script": "The generated content here"
     }}
     """
 
@@ -1464,13 +1464,15 @@ def log_transcript(transcript_text, new_video_title):
 
 
 def step_5f_send_to_telegram():
+    from telegram import Bot
+    import asyncio
+
     # Telegram Bot Configuration
     BOT_TOKEN = '6157935666:AAESXcHywVwdHZqurjz0kCcVTjzCv50gjlQ'
     CHAT_ID = '5034393732'
 
-    # Paths to the final video and transcript log
     FINAL_VIDEO_DIR = '/home/ubuntu/crewgooglegemini/FINALVIDEOS/WellnessGram'
-    TRANSCRIPT_PATH = '/home/ubuntu/crewgooglegemini/video_transcript_log.txt'
+    TRANSCRIPT_PATH = '/home/ubuntu/crewgooglegemini/001videototxt/output_transcript.json'
 
     # Find the most recent video file in the FINAL_VIDEO_DIR
     if not os.path.exists(FINAL_VIDEO_DIR):
@@ -1482,57 +1484,46 @@ def step_5f_send_to_telegram():
         print("Error: No video files found in the final video directory.")
         return
 
-    # Get the latest video file by modification time
     latest_video_file = max(video_files, key=lambda f: os.path.getmtime(os.path.join(FINAL_VIDEO_DIR, f)))
     video_path = os.path.join(FINAL_VIDEO_DIR, latest_video_file)
+    video_title = os.path.splitext(latest_video_file)[0]
 
-    # Read the latest transcript from the log file
+    # Read the transcript from the JSON
     if not os.path.exists(TRANSCRIPT_PATH):
         print(f"Error: Transcript log file {TRANSCRIPT_PATH} does not exist.")
         return
 
-    transcripts = []
-    current_json = ""
-    with open(TRANSCRIPT_PATH, 'r') as f:
-        for line in f:
-            if line.strip() == "{":
-                current_json = "{"
-            elif line.strip() == "}":
-                current_json += "}"
-                try:
-                    transcript = json.loads(current_json)
-                    transcripts.append(transcript)
-                except json.JSONDecodeError:
-                    print(f"Skipping invalid JSON object: {current_json}")
-                current_json = ""
-            else:
-                current_json += line
+    with open(TRANSCRIPT_PATH, 'r', encoding='utf-8') as f:
+        try:
+            transcript_json = json.load(f)
+        except json.JSONDecodeError:
+            print(f"Transcript file {TRANSCRIPT_PATH} is not valid JSON.")
+            return
 
-    if not transcripts:
-        print("No valid transcripts found in the log file.")
-        return
+    # Use the 'script' field as the transcript text
+    transcript_text = transcript_json.get('script', '')
 
-    # Find the latest transcript by timestamp
-    latest_transcript = max(transcripts, key=lambda x: x['timestamp'])
+    # Compose the transcript message
+    transcript_message = (
+        f"Title: {video_title}\n\n"
+        f"Transcript:\n{transcript_text}"
+    )
 
     # Use asyncio to run the async function
-    asyncio.run(send_telegram_message(BOT_TOKEN, CHAT_ID, video_path, latest_transcript))
+    asyncio.run(send_telegram_message(BOT_TOKEN, CHAT_ID, video_path, video_title, transcript_message))
 
-async def send_telegram_message(bot_token, chat_id, video_path, transcript):
+async def send_telegram_message(bot_token, chat_id, video_path, video_title, transcript_message):
     try:
-        # Initialize Telegram Bot
+        from telegram import Bot
+
         bot = Bot(token=bot_token)
 
         # Send the video to Telegram
         with open(video_path, 'rb') as video:
-            await bot.send_video(chat_id=chat_id, video=video, caption=f"Video Title: {transcript['video_title']}")
+            await bot.send_video(chat_id=chat_id, video=video, caption=f"Video Title: {video_title}")
 
         # Send the transcript as a text message
-        transcript_text = (
-            f"Title: {transcript['video_title']}\n\n"
-            f"Transcript:\n{transcript['transcript']}"
-        )
-        await bot.send_message(chat_id=chat_id, text=transcript_text)
+        await bot.send_message(chat_id=chat_id, text=transcript_message)
 
         print("Video and transcript sent successfully to Telegram.")
 
@@ -1740,6 +1731,11 @@ async def process_generated_content(new_video_title, script, base_output_dir_nam
 
     print("Paths configured and ensured.")
 
+     # 2. Log Transcript (if provided)
+    if transcript_text:
+        log_transcript(transcript_text, new_video_title)
+        print(colored("Transcript logged successfully.", "green"))
+        
     # 2. Log Transcript (Assumed to be done *before* this function is called if it's the original video transcript)
     # If the `script` parameter itself needs to be logged as a "transcript", that would happen here.
     # For now, following the prompt, `log_transcript` is called outside with the original transcript.
@@ -1989,13 +1985,13 @@ async def process_generated_content(new_video_title, script, base_output_dir_nam
 
 def step_5g_upload_to_google_drive():
     FINAL_VIDEO_DIR = '/home/ubuntu/crewgooglegemini/FINALVIDEOS/WellnessGram'
-    TRANSCRIPT_PATH = '/home/ubuntu/crewgooglegemini/video_transcript_log.txt'
+    TRANSCRIPT_PATH = '/home/ubuntu/crewgooglegemini/001videototxt/output_transcript.json'
 
 
 
 def step_5g_upload_to_google_drive():
     FINAL_VIDEO_DIR = '/home/ubuntu/crewgooglegemini/FINALVIDEOS/WellnessGram'
-    TRANSCRIPT_PATH = '/home/ubuntu/crewgooglegemini/video_transcript_log.txt'
+    TRANSCRIPT_PATH = '/home/ubuntu/crewgooglegemini/001videototxt/output_transcript.json'
 
     # Find latest video
     video_files = [f for f in os.listdir(FINAL_VIDEO_DIR) if f.endswith(".mp4")]
@@ -2005,37 +2001,22 @@ def step_5g_upload_to_google_drive():
     latest_video_file = max(video_files, key=lambda f: os.path.getmtime(os.path.join(FINAL_VIDEO_DIR, f)))
     video_path = os.path.join(FINAL_VIDEO_DIR, latest_video_file)
 
-    # Load latest transcript from log
-    transcripts = []
-    current_json = ""
-    with open(TRANSCRIPT_PATH, 'r') as f:
-        for line in f:
-            if line.strip() == "{":
-                current_json = "{"
-            elif line.strip() == "}":
-                current_json += "}"
-                try:
-                    transcript = json.loads(current_json)
-                    transcripts.append(transcript)
-                except json.JSONDecodeError:
-                    pass
-                current_json = ""
-            else:
-                current_json += line
+    # Load script from output_transcript.json
+    with open(TRANSCRIPT_PATH, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    script_text = data.get('script', '')
 
-    if not transcripts:
-        print("No valid transcripts found.")
-        return
-
-    latest_transcript = max(transcripts, key=lambda x: x['timestamp'])
+    # Optionally set a default title based on the filename
+    video_title = os.path.splitext(latest_video_file)[0]
 
     # Create the transcript file as a .txt
-    transcript_filename = os.path.join(FINAL_VIDEO_DIR, f"{os.path.splitext(latest_video_file)[0]}_transcript.txt")
+    transcript_filename = os.path.join(FINAL_VIDEO_DIR, f"{video_title}_transcript.txt")
     transcript_text = (
-        f"Title: {latest_transcript['video_title']}\n\n"
-        f"Transcript:\n{latest_transcript['transcript']}"
+        f"Title: {video_title}\n\n"
+        f"Transcript:\n{script_text}"
     )
-    with open(transcript_filename, 'w') as tf:
+    with open(transcript_filename, 'w', encoding='utf-8') as tf:
         tf.write(transcript_text)
 
     # Upload video to Google Drive
@@ -2074,7 +2055,7 @@ def normalize_text(text):
 def generate_biblical_script(biblical_focus):
     prompt = f"""You are a distinguished biblical scholar and master communicator, tasked with creating exceptionally compelling YouTube scripts that illuminate the depths of the 66 canonical books of the Bible. Your goal is to make ancient truths resonate powerfully today, captivating both seasoned believers and curious seekers, encouraging deep reflection, and inspiring a desire to learn more. The scripts must be unique, unforgettable, and remarkably insightful.
     
-    Your task is to take the provided biblical transcript, theme, or specific passage focus and transform it into an **extraordinary and spiritually invigorating YouTube script**. This script must not only be biblically sound and accurate but also structured to maximize viewer engagement, watch time, and a profound sense of discovery, and should be for a 20 to 30 seconds short(20 to 30 words).
+    Your task is to take the provided biblical transcript, theme, or specific passage focus and transform it into an **extraordinary and spiritually invigorating YouTube script**. This script must not only be biblically sound and accurate but also structured to maximize viewer engagement, watch time, and a profound sense of discovery, and should be for a 2 to 3 minutes short(200 to 300 words).
     
     **Core Script Directives (Embodying Biblical Exegesis & Apologetics):**
     
@@ -2086,12 +2067,13 @@ def generate_biblical_script(biblical_focus):
         - Use simple to understand english for the understanding of someone who english is not thier first language. Do not use terms thats that need a dictionary to get its meaning, rather simpler word used in day to day conversation which still perfectly delivers the message.
         - Present the core message as an unfolding narrative or a meticulously constructed argument, drawing the viewer deeper with each point.
         - **Scriptural Integrity:** Ground all arguments and insights firmly within the 66 canonical books of the Bible. Quote scriptures precisely (specify a preferred translation if you have one, e.g., NIV, ESV, KJV, or allow the LLM to choose a common one if not specified, but ensure consistency).
-        - **Original Language Insights:** Where pivotal for understanding, incorporate the nuanced meanings of key Hebrew, Aramaic, or Greek words, explaining their significance clearly and concisely to enrich the exegesis. For example, "The Hebrew word 'hesed' here, often translated as 'loving-kindness,' carries a much deeper covenantal weight, implying..."
+        - **Original Language Insights:** Where pivotal for understanding, incorporate the nuanced meanings of key Hebrew, Aramaic, or Greek words, explaining their significance clearly and concisely to enrich the exegesis. For example, "The Hebrew translation for 'loving-kindness,' carries a much deeper covenantal weight, implying..."
         - **Historical & Geographical Context:** Connect biblical events and teachings to their verified historical and geographical settings. If relevant, draw parallels or contrasts between ancient landscapes/cities (e.g., Jerusalem, Babylon) and their present-day locations or archaeological findings, making the Bible "come alive."
         - **Dynamic & Persuasive Delivery:** Use vibrant, respectful, yet authoritative language. The tone should be that of a passionate, knowledgeable guide leading an exciting exploration, not a dry academic lecture. Employ rhetorical questions, vivid imagery drawn from the text, and compelling logic.
         - **Homiletic Flow & Apologetic Strength:** Structure arguments clearly (sound hermeneutics leading to sound homiletics). Where the topic touches on areas requiring defense or clarification (apologetics), present well-reasoned, scripture-backed insights that are both intellectually satisfying and spiritually encouraging. Address potential doubts or modern skepticism with wisdom and clarity.
     
     - **Engineer Spiritual Engagement:**
+        - For every biblical topic or input you receive, create an inspiring problem statement, attempt to answer it with atleast one inspiring quoted scripture and at the end, ask the viewers whats take about it. 
         - **Unearth Hidden Gems:** Focus on revealing connections, typologies, or prophetic fulfillments within the Bible that are often overlooked but profoundly illuminating.
         - **Challenge and Inspire:** Present biblical truths in a way that challenges complacency and inspires genuine spiritual reflection and transformation, without being judgmental or preachy.
         - **Bridge Ancient Wisdom to Modern Life:** Make explicit connections between the biblical message and contemporary challenges, aspirations, and ethical dilemmas, demonstrating the Bible's timeless relevance.
@@ -2105,7 +2087,7 @@ def generate_biblical_script(biblical_focus):
         - Do not include asterisks (*) or emojis.
         - Begin with a hook as described in the "Revelation-Inducing Introduction."
         - Ensure a seamless, logical flow, using transitional phrases. If the topic lends itself to a numbered or thematic breakdown (e.g., "Three reasons why...", "The seven aspects of..."), structure it accordingly.
-        - **Conclude with a Profound Takeaway and Unique Call to Action:** End with a powerful summary statement, a lingering question that encourages deep personal reflection on the biblical truths presented, or a call to apply the message. For the YouTube call to action: "If this exploration has deepened your understanding or sparked a new hunger for biblical truth, join our journey by subscribing. We're committed to uncovering the life-changing power of God's Word, one revelation at a time. Don't miss out."
+        - **Conclude with a Profound Takeaway and Unique Call to Action:** End with a powerful summary statement or  a lingering question that encourages deep personal reflection on the biblical truths presented, or a call to apply the message, or ask for subscribing, liking, sharing, turn on notification, etc.
     
     Additionally, generate:
     - A **new video title** that is both intriguing ( style – e.g., "The Old Testament Secret That Unlocks True Happiness," "They Don't Want You To Know This About The Apostle Paul") and accurately reflects the core biblical topic, optimized for YouTube search.
@@ -2127,7 +2109,7 @@ def generate_biblical_script(biblical_focus):
 
     # Log the raw response for debugging
     # Log the raw response for debugging
-    print("Raw API Response:", response.text)
+    #print("Raw API Response:", response.text)
 
     # Get the content from the response
     content = response.text
@@ -2222,6 +2204,8 @@ def get_first_json_string_and_update_file(json_file_path):
 # ---------------------------------------------------------------------------
 # MAIN OPERATIONAL FUNCTION
 # ---------------------------------------------------------------------------
+
+
 async def main():
     first_run = True
     while True:
@@ -2234,167 +2218,95 @@ async def main():
             option = input("Enter 1, 2, 3, or 4: ").strip()
             first_run = False
         else:
-            option = "3"  # Automatically process next link
+            option = "3"
 
         if option == "1":
-            # Note: This block assumes you're running in an environment like Colab.
-            # Replace 'files' with an appropriate file-upload mechanism if needed.
-            if files is None:
-                raise Exception("File upload is only supported in a Colab environment. Please choose option 2 or adjust accordingly.")
-            print("Please upload your video or audio file:")
-            uploaded = files.upload()
-            # Get the first (and expected only) file name from the uploaded files.
-            filename = list(uploaded.keys())[0]
+            print("File upload not implemented.")
+            continue
+
         elif option == "2":
             youtube_link = input("Please paste the YouTube link: ").strip()
-            # Call the helper function to download the video.
             filename = download_youtube_video(youtube_link, output_path="/home/ubuntu/downloads")
             if filename is None:
                 print("Failed to download video from YouTube. Exiting.")
                 continue
             else:
                 print("Download successful. File saved as:", filename)
+
         elif option == "3":
             youtube_link, link_path = get_next_link()
             if youtube_link is None:
                 print("No more links found in Newlinks directory. Exiting.")
-                break 
+                break
 
-            # --- Start of Option 3 specific logic ---
             print(f"Processing link from Newlinks: {youtube_link}")
-            downloaded_video_path = None
-            transcript_text = None
-            myfile = None # Initialize myfile
-
+            # --- FULL PIPELINE FOR OPTION 3 ---
+            transcript_text, myfile, downloaded_video_path = None, None, None
             try:
                 downloaded_video_path = download_youtube_video(youtube_link, output_path="/home/ubuntu/downloads")
-
                 if downloaded_video_path:
-                    print(f"Successfully downloaded: {downloaded_video_path}")
-                    
                     myfile = genai.upload_file(downloaded_video_path)
-                    print(f"Uploaded file {downloaded_video_path} to Gemini as {myfile.name}. Checking status...")
-
                     start_time = time.time()
-                    max_delay = 120 
+                    max_delay = 120
                     while True:
                         current_file_status = genai.get_file(myfile.name).state.name
                         print(f"Current file state for {myfile.name}: {current_file_status}. Waiting for file to become ACTIVE...")
                         if current_file_status == "ACTIVE":
-                            print(f"File {myfile.name} is ACTIVE.")
                             break
                         if current_file_status == "FAILED":
-                            print(f"File {myfile.name} processing FAILED on Gemini.")
-                            raise Exception(f"Gemini file processing failed for {myfile.name}") 
+                            myfile = None
+                            break
                         if time.time() - start_time > max_delay:
-                            raise Exception(f"File {myfile.name} did not become ACTIVE within {max_delay}s. Last state: {current_file_status}")
+                            myfile = None
+                            break
                         time.sleep(10)
-                    
-                    model_for_transcript = genai.GenerativeModel("gemini-2.0-flash") # Ensure model is defined here
-                    prompt_for_transcript = "Generate a transcript of the speech in this audio/video file. Only provide the transcript, without any additional commentary."
-                    
-                    result = generate_transcript_with_retries(model_for_transcript, myfile, prompt_for_transcript)
-                    transcript_text = result.text
-                    print("Transcript generated successfully.")
+                    if myfile and genai.get_file(myfile.name).state.name == "ACTIVE":
+                        model = genai.GenerativeModel("gemini-2.0-flash")
+                        prompt_for_transcript = "Generate a transcript of the speech in this audio/video file. Only provide the transcript, without any additional commentary."
+                        result = generate_transcript_with_retries(model, myfile, prompt_for_transcript)
+                        transcript_text = result.text
                 else:
                     print(f"Failed to download video for link: {youtube_link}")
-                    # This path will lead to transcript_text being None, handled below.
 
             except Exception as e:
-                print(f"An error occurred during download or transcript generation for {youtube_link}: {e}")
-                # Error already printed, transcript_text will remain None or be the error object if not string.
-            
+                print(f"An error occurred during download/transcript generation: {e}")
+
             finally:
                 if myfile:
                     try:
                         genai.delete_file(myfile.name)
-                        print(f"Deleted uploaded file {myfile.name} from Gemini.")
-                    except Exception as e_del:
-                        print(f"Error deleting file {myfile.name} from Gemini: {e_del}")
+                    except Exception:
+                        pass
                 if downloaded_video_path and os.path.exists(downloaded_video_path):
                     os.remove(downloaded_video_path)
-                    print(f"Cleaned up downloaded file: {downloaded_video_path}")
 
-            if transcript_text and isinstance(transcript_text, str): # Ensure transcript_text is a string
-                new_video_title, script = None, None
+            if transcript_text and isinstance(transcript_text, str):
                 try:
                     new_video_title, script = generate_script_from_video(transcript_text)
                 except Exception as e:
-                    print(f"Error generating script from video transcript for {youtube_link}: {e}")
+                    print(f"Error generating script: {e}")
+                    continue
 
                 if new_video_title and script:
-                    print(f"Generated Script for {new_video_title}")
-                    
-                    # Log the original transcript from the YouTube video
-                    log_transcript(transcript_text, new_video_title)
-                    print(colored("Original transcript logged successfully.", "green"))
-
-                    # Call the refactored function
-                    try:
-                        await process_generated_content(new_video_title, script, "WellnessGram", "option3")
-                        
-                        # If process_generated_content is successful, then move the link
-                        if os.path.exists(link_path): # link_path is new_links_file from get_next_link()
-                            with open(link_path, 'r') as file:
-                                lines = file.readlines()
-                            if lines:
-                                used_links_file = "/home/ubuntu/crewgooglegemini/AUTO/Usedlinks.txt"
-                                ensure_folder_exists(os.path.dirname(used_links_file)) # Ensure dir exists
-                                if not os.path.exists(used_links_file): # Ensure file exists
-                                     with open(used_links_file, 'w') as f: pass
-
-                                with open(used_links_file, 'a') as used_file:
-                                    used_file.write(youtube_link + '\n') # Write the specific link processed
-                                
-                                with open(link_path, 'w') as new_file:
-                                    new_file.writelines(lines[1:]) 
-                                print(f"Moved processed link {youtube_link} from {link_path} to {used_links_file}")
-                        else:
-                            print(f"Warning: {link_path} not found, cannot manage link movement.")
-
-                    except Exception as e_process:
-                        print(f"Error during 'process_generated_content' for {new_video_title} (link: {youtube_link}): {e_process}")
-                        print(f"Moving link {youtube_link} to checklink.txt due to processing error.")
-                        check_links_file = "/home/ubuntu/crewgooglegemini/AUTO/checklink.txt" # Define if not global
-                        ensure_folder_exists(os.path.dirname(check_links_file))
-                        if not os.path.exists(check_links_file):
-                             with open(check_links_file, 'w') as f: pass
-                        with open(check_links_file, 'a') as check_file:
-                            check_file.write(youtube_link + '\n')
-                        # Remove from Newlinks.txt
-                        if os.path.exists(link_path):
-                            with open(link_path, 'r') as file: lines = file.readlines()
-                            with open(link_path, 'w') as file: file.writelines(lines[1:])
-                else: # Script generation failed
-                    print(f"Failed to generate script for {youtube_link}. Moving to checklink.txt.")
-                    check_links_file = "/home/ubuntu/crewgooglegemini/AUTO/checklink.txt"
-                    ensure_folder_exists(os.path.dirname(check_links_file))
-                    if not os.path.exists(check_links_file):
-                         with open(check_links_file, 'w') as f: pass
-                    with open(check_links_file, 'a') as check_file:
-                        check_file.write(youtube_link + '\n')
+                    # ---- FULL MEDIA PIPELINE ----
+                    await run_full_pipeline(new_video_title, script)
+                    # Move processed link to Usedlinks.txt and remove from Newlinks.txt
                     if os.path.exists(link_path):
-                        with open(link_path, 'r') as file: lines = file.readlines()
-                        with open(link_path, 'w') as file: file.writelines(lines[1:])
+                        with open(link_path, 'r') as file:
+                            lines = file.readlines()
+                        used_links_file = "/home/ubuntu/crewgooglegemini/AUTO/Usedlinks.txt"
+                        with open(used_links_file, 'a') as used_file:
+                            used_file.write(youtube_link + '\n')
+                        with open(link_path, 'w') as new_file:
+                            new_file.writelines(lines[1:])
+                else:
+                    print(f"Failed to generate script for {youtube_link}. Skipping.")
 
-            else: # Transcript generation failed or download failed
-                print(f"Transcript generation or download failed for {youtube_link}. Moving to checklink.txt.")
-                check_links_file = "/home/ubuntu/crewgooglegemini/AUTO/checklink.txt"
-                ensure_folder_exists(os.path.dirname(check_links_file))
-                if not os.path.exists(check_links_file):
-                    with open(check_links_file, 'w') as f: pass
-                with open(check_links_file, 'a') as check_file:
-                    check_file.write(youtube_link + '\n')
-                if os.path.exists(link_path): # link_path is new_links_file
-                    with open(link_path, 'r') as file:
-                        lines = file.readlines()
-                    with open(link_path, 'w') as file:
-                        file.writelines(lines[1:]) # Remove the failed link
+            else:
+                print(f"Transcript generation or download failed for {youtube_link}. Skipping.")
 
             print("Option 3 processing for current link finished. Ready for next iteration or option.")
             time.sleep(3)
-            # No explicit 'continue' here as it's inside the main while True, so it will loop.
-            # The original 'break' for youtube_link is None is kept.
 
         elif option == "4":
             print("Processing Option 4: Bible Stories")
@@ -2403,565 +2315,317 @@ async def main():
             bible_links_file = "/home/ubuntu/crewgooglegemini/AUTO/Biblelinks.txt"
             used_bible_links_file = "/home/ubuntu/crewgooglegemini/AUTO/Usedbiblelinks.txt"
             failed_bible_links_file = "/home/ubuntu/crewgooglegemini/AUTO/checklink.txt"
-        
-            # Ensure all link files exist or are created (touched)
-            for f_path in [bible_links_file, used_bible_links_file, failed_bible_links_file]:
-                if not os.path.exists(f_path):
-                    with open(f_path, 'w') as f:
-                        pass  # Create empty file if it doesn't exist
-        
-            # Load stories from JSON (as list of strings)
-            try:
-                with open(bible_txt_json, 'r', encoding='utf-8') as f:
-                    bible_stories = json.load(f)
-            except Exception as e:
-                print(f"Error loading Bible stories JSON: {e}")
-                bible_stories = []
-        
-            # Load used stories (if any)
-            try:
-                with open(used_txtfiles_json, 'r', encoding='utf-8') as f:
-                    used_stories = json.load(f)
-            except:
-                used_stories = []
-        
-            # Find next unused story
-            # Find next unused story
-            next_story = None
-            for story in bible_stories:
-                if story not in used_stories:
-                    next_story = story
+
+            # Step 1: Process all stories in BiblestoriesTxt.json
+            while True:
+                try:
+                    with open(bible_txt_json, 'r', encoding='utf-8') as f:
+                        bible_stories = json.load(f)
+                except Exception as e:
+                    print(f"Error loading Bible stories JSON: {e}")
+                    bible_stories = []
+                if not bible_stories:
+                    print("No more stories in BiblestoriesTxt.json. Switching to Biblelinks.txt.")
                     break
-        
-            if next_story:
+
+                next_story = bible_stories[0]
                 print("Next Bible Story Selected:")
                 print(next_story)
-        
+
+                transcript_text = next_story
                 new_video_title, script = None, None
-                if next_story.strip():  # Ensure content is not empty
-                    try:
-                        new_video_title, script = generate_biblical_script(next_story)
-                    except Exception as e:
-                        print(f"Error generating biblical script from TXT: {e}")
-                else:
-                    print(f"JSON story is empty. Skipping script generation.")
-        
+                try:
+                    new_video_title, script = generate_biblical_script(transcript_text)
+                except Exception as e:
+                    print(f"Error generating script for story: {e}")
+
                 if new_video_title and script:
-                    try:
-                        await process_generated_content(new_video_title, script, "WellnessGram", "option4_txt")
-                        # Only now mark as used!
-                        used_stories.append(next_story)
-                        with open(used_txtfiles_json, 'w', encoding='utf-8') as f:
-                            json.dump(used_stories, f, indent=2)
-                        print(f"Marked story as used in {used_txtfiles_json}")
-                    except Exception as e:
-                        print(f"Error during 'process_generated_content' for story: {e}")
-                        # Optionally log to a failed list here
+                    await run_full_pipeline(new_video_title, script)
+                    print("Media pipeline for text story completed.")
                 else:
-                    print("Failed to generate script from JSON story or story was empty. Skipping processing.")
-                    # Optionally log to a failed list here
-                
-                time.sleep(3)
-                continue # Restart main loop
-            else:
-                print("No new text files found in BiblestoriesTxt. Checking Biblelinks.txt...")
+                    print("Script generation failed for story.")
 
-            # --- Bible Links File Processing Logic (Fallback) ---
-            if not os.path.exists(bible_links_file):
-                print(f"{bible_links_file} not found. Cannot process Bible links.")
-                time.sleep(3)
-                continue
+                # Mark as used and remove from BiblestoriesTxt.json
+                try:
+                    with open(used_txtfiles_json, 'r', encoding='utf-8') as f:
+                        used_stories = json.load(f)
+                except:
+                    used_stories = []
+                used_stories.append(next_story)
+                with open(used_txtfiles_json, 'w', encoding='utf-8') as f:
+                    json.dump(used_stories, f, indent=2)
+                bible_stories.pop(0)
+                with open(bible_txt_json, 'w', encoding='utf-8') as f:
+                    json.dump(bible_stories, f, indent=2)
+                print(f"Marked story as used and removed from {bible_txt_json}")
 
-            bible_links = []
-            try:
+                time.sleep(2)
+
+            # Step 2: Now process links one by one from Biblelinks.txt
+            while True:
+                if not os.path.exists(bible_links_file):
+                    print("No Biblelinks.txt file found! Option 4 complete.")
+                    break
                 with open(bible_links_file, 'r') as f:
-                    bible_links = [line.strip() for line in f if line.strip()]
-            except Exception as e:
-                print(f"Error reading {bible_links_file}: {e}")
-                time.sleep(3)
-                continue
+                    links = [line.strip() for line in f if line.strip()]
+                if not links:
+                    print("No more links in Biblelinks.txt. Option 4 complete.")
+                    break
 
+                youtube_link = links[0]
+                print(f"Processing Bible link: {youtube_link}")
 
-            if not bible_links:
-                print("No links found in Biblelinks.txt. Option 4 processing complete for now.")
-                
-                time.sleep(3)
-                # Setting first_run to True will show menu again, or just break/continue
-                # For now, let's continue to allow other options or auto-cycling if implemented
-                continue
-
-            youtube_link = bible_links[0]
-            print(f"Processing Bible link: {youtube_link}")
-            
-            downloaded_video_path = None # Initialize
-            try:
                 downloaded_video_path = download_youtube_video(youtube_link, output_path="/home/ubuntu/downloads")
-
+                transcript_text = None
+                myfile = None
                 if downloaded_video_path:
-                    print(f"Successfully downloaded: {downloaded_video_path}")
-                    myfile = None 
-                    transcript_text = None
-                    try: 
+                    try:
                         myfile = genai.upload_file(downloaded_video_path)
-                        
                         start_time = time.time()
-                        max_delay = 120 
+                        max_delay = 120
                         while True:
-                            # myfile.state (or myfile.state.name) is the correct attribute based on google-generativeai documentation
-                            # However, the original code had myfile.status.upper() and the prompt had myfile.state.name
-                            # Let's use myfile.state.name as per the prompt's most recent version of this logic
-                            current_state = genai.get_file(myfile.name).state.name # Always fetch the latest state
+                            current_state = genai.get_file(myfile.name).state.name
                             print(f"Current file state for {myfile.name}: {current_state}. Waiting for file to become ACTIVE...")
-                            if current_state == "ACTIVE":
-                                print(f"File {myfile.name} is ACTIVE.")
-                                break
+                            if current_state == "ACTIVE": break
                             if current_state == "FAILED":
-                                print(f"File {myfile.name} processing FAILED on Gemini.")
-                                myfile = None # Mark as failed
+                                myfile = None
                                 break
                             if time.time() - start_time > max_delay:
-                                print(f"File {myfile.name} did not become ACTIVE or FAILED within {max_delay}s. Last state: {current_state}")
-                                myfile = None # Mark as failed due to timeout
+                                myfile = None
                                 break
                             time.sleep(10)
-
-                        if myfile and myfile.state.name == "ACTIVE": # Check again after loop
-                            model = genai.GenerativeModel("gemini-2.0-flash") 
+                        if myfile and genai.get_file(myfile.name).state.name == "ACTIVE":
+                            model = genai.GenerativeModel("gemini-2.0-flash")
                             prompt_transcript = "Generate a transcript of the speech in this audio/video file. Only provide the transcript, without any additional commentary."
                             try:
                                 result = generate_transcript_with_retries(model, myfile, prompt_transcript)
                                 transcript_text = result.text
-                                print("Transcript generated for link.")
                             except Exception as e:
                                 print(f"Error generating transcript for {youtube_link}: {e}")
-                        else: # File did not become active or failed
-                             print(f"File upload processing for {downloaded_video_path} (link: {youtube_link}) did not result in an ACTIVE file. Current state: {current_state if 'current_state' in locals() else 'Unknown'}")
-
-
-                        if transcript_text:
-                            new_video_title, script = None, None
-                            try:
-                                new_video_title, script = generate_biblical_script(transcript_text)
-                            except Exception as e:
-                                print(f"Error generating biblical script from transcript for {youtube_link}: {e}")
-                            
-                            if new_video_title and script:
-                                try:
-                                    await process_generated_content(new_video_title, script, "WellnessGram", "option4_link")
-                                    
-                                    with open(used_bible_links_file, 'a') as ublf:
-                                        ublf.write(youtube_link + '\n')
-                                    print(f"Successfully processed and moved link {youtube_link} to {used_bible_links_file}")
-                                except Exception as e:
-                                    print(f"Error in process_generated_content for {youtube_link}: {e}. Moving to failed links.")
-                                    with open(failed_bible_links_file, 'a') as fblf:
-                                        fblf.write(youtube_link + '\n')
-                            else: # Script generation failed
-                                print(f"Failed to generate script for {youtube_link}. Moving to failed links.")
-                                with open(failed_bible_links_file, 'a') as fblf:
-                                    fblf.write(youtube_link + '\n')
-                        else: # Transcript generation failed or file not active
-                            print(f"Transcript generation failed or file not active for {youtube_link}. Moving to failed links.")
-                            with open(failed_bible_links_file, 'a') as fblf:
-                                fblf.write(youtube_link + '\n')
-                    
-                    finally: # Cleanup for Gemini file and local download
-                        if myfile: 
+                        else:
+                            print(f"File upload processing for {downloaded_video_path} (link: {youtube_link}) did not result in an ACTIVE file.")
+                    finally:
+                        if myfile:
                             try:
                                 genai.delete_file(myfile.name)
-                                print(f"Deleted uploaded file {myfile.name} from Gemini.")
-                            except Exception as e:
-                                print(f"Error deleting file {myfile.name} from Gemini: {e}")
-                        if downloaded_video_path and os.path.exists(downloaded_video_path): # Check path exists
+                            except Exception:
+                                pass
+                        if downloaded_video_path and os.path.exists(downloaded_video_path):
                             os.remove(downloaded_video_path)
-                            print(f"Cleaned up downloaded file: {downloaded_video_path}")
-                else: # Download failed
-                   print(f"Failed to download {youtube_link}. Moving to {failed_bible_links_file}.")
-                   with open(failed_bible_links_file, 'a') as fblf:
-                       fblf.write(youtube_link + '\n')
-                
-                # Remove processed/failed link from original bible_links_file for all cases (download fail, processing fail, success)
-                remaining_links = bible_links[1:]
-                with open(bible_links_file, 'w') as blf:
-                    for link_item in remaining_links: # Renamed variable to avoid conflict
-                        blf.write(link_item + '\n')
-                if not remaining_links:
-                    print(f"{bible_links_file} is now empty.")
 
-            except Exception as e: # Catch broader errors during download or outer try
-                print(f"An unexpected error occurred processing link {youtube_link}: {e}")
-                with open(failed_bible_links_file, 'a') as fblf:
-                    fblf.write(youtube_link + '\n')
-                # Ensure link is removed from main list even with unexpected error
-                if youtube_link in bible_links: # Check if it was loaded
-                    updated_links = [l for l in bible_links if l != youtube_link]
-                    with open(bible_links_file, 'w') as blf:
-                        for link_item in updated_links:
-                            blf.write(link_item + '\n')
+                if transcript_text:
+                    try:
+                        new_video_title, script = generate_biblical_script(transcript_text)
+                    except Exception as e:
+                        print(f"Error generating script from transcript for {youtube_link}: {e}")
+                    if new_video_title and script:
+                        await run_full_pipeline(new_video_title, script)
+                        print("Media pipeline for Bible link completed.")
+                    else:
+                        print("Script generation failed for Bible link.")
+                else:
+                    print("Transcript generation failed for Bible link.")
 
-            
-            time.sleep(3)
-            continue # Continue to next main loop iteration
+                # Move processed link to Usedbiblelinks.txt and remove from Biblelinks.txt
+                with open(used_bible_links_file, 'a') as ublf:
+                    ublf.write(youtube_link + '\n')
+                links.pop(0)
+                with open(bible_links_file, 'w') as f:
+                    for l in links:
+                        f.write(l + '\n')
+                print(f"Moved processed link to {used_bible_links_file} and removed from {bible_links_file}")
 
-        else: # This is the else for `if option == "1" / "2" / "3" / "4"`
+                time.sleep(2)
+
+        else:
             print("Invalid option selected. Exiting.")
             break
 
-        # Continue with further processing of the file (if needed).
-        print("Processing complete. Filename:", filename)
+async def run_full_pipeline(new_video_title, script):
+    print(f"Running media pipeline for: {new_video_title}")
+    # Save script for image prompt context
+    output_script_path = '/home/ubuntu/crewgooglegemini/001videototxt/output_transcript.json'
+    with open(output_script_path, 'w') as f:
+        json.dump({"script": script}, f)
+    
 
+    # Step 4: Generate Audio
+    VOICE_OVER_FOLDER = "/home/ubuntu/crewgooglegemini/001videototxt/voice_over"
+    ensure_folder_exists(VOICE_OVER_FOLDER)
+    audio_path = os.path.join(VOICE_OVER_FOLDER, "voiceover.wav")
+    print("Generating audio...")
+    await generate_audio(script, audio_path)
+    print(f"Audio saved to {audio_path}")
 
-        
-        # --- Step 2: Upload file to your generative model API and generate transcript ---
-        myfile = genai.upload_file(filename)
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        prompt = "Generate a transcript of the speech in this audio/video file. Only provide the transcript, without any additional commentary."
-        
-        retry_delay = 10
-        max_delay = 60
-        
-        # Wait for the file to become ACTIVE.
-        start_time = time.time()
-        while True:
-            # Assuming that the uploaded file object has a 'status' attribute.
-            # If not, you might need to call a method like genai.check_file_status(myfile) instead.
-            if hasattr(myfile, 'status'):
-                if myfile.status.upper() == "ACTIVE":
-                    print("File is ACTIVE.")
-                    break
-                else:
-                    print(f"Current file status: {myfile.status}. Waiting for file to become ACTIVE...")
-            else:
-                # If there's no status attribute, you might have a different mechanism to check status.
-                print("No status attribute found on myfile; assuming file is active.")
-                break
-        
-            if time.time() - start_time > max_delay:
-                print("File did not become ACTIVE within the maximum delay.")
-                # Handle as a transcript failure below
-                break
-            time.sleep(retry_delay)
-        
-        # --- Generate Transcript with Retry Logic ---
-        print("Generating transcript...")
-        try:
-            result = generate_transcript_with_retries(model, myfile, prompt, retries=10, delay=10)
-            print("Transcript:")
-            print(result.text)
-        except Exception as e:
-            print(f"An error occurred during transcript generation: {e}")
-            # Move the failed link to checklink.txt and remove from Newlinks.txt if youtube_link is defined
-            if 'youtube_link' in locals():
-                print("Moving link to checklink.txt and removing from Newlinks.txt.")
-                check_links_file = "/home/ubuntu/crewgooglegemini/AUTO/checklink.txt"
-                with open(check_links_file, 'a') as check_file:
-                    check_file.write(youtube_link + '\n')
-                # Remove the failed link from Newlinks.txt
-                new_links_file = "/home/ubuntu/crewgooglegemini/AUTO/Newlinks.txt"
-                with open(new_links_file, 'r') as file:
-                    lines = file.readlines()
-                with open(new_links_file, 'w') as file:
-                    file.writelines(lines[1:])  # Skip the first line (the failed link)
-                time.sleep(5)  # Optional: Add a delay before processing the next link
-                continue  # Go to the next link in your main loop
-            else:
-                print("No youtube_link found; not moving to checklink.txt.")
-            # If not processing from Newlinks, handle as needed (e.g., return, break, etc.)
-
-
-    
-        # Save transcript to a JSON file
-        transcript_data = {"transcript": result.text}
-        transcript_file = '/home/ubuntu/crewgooglegemini/001videototxt/input_transcripts.json'
-        with open(transcript_file, 'w') as f:
-            json.dump(transcript_data, f)
-        print(f"Transcript saved to {transcript_file}")
-    
-        time.sleep(5)
-    
-        # Read transcript from file (for debugging or further processing)
-        if not os.path.exists(transcript_file):
-            raise FileNotFoundError(f"Input transcript file not found at {transcript_file}")
-        with open(transcript_file, 'r') as f:
-            transcript_data = json.load(f)
-        if 'transcript' not in transcript_data:
-            raise KeyError("'transcript' key not found in input transcript JSON")
-    
-    # --- Step 3: Generate Script from Transcript ---
-        transcript_text = transcript_data['transcript']
-        new_video_title, script = generate_script_from_video(transcript_text)
-        if new_video_title and script:
-           # print(f"New Video Title: {new_video_title}")
-            print(f"Generated Script: {script}")
-            output_script_path = '/home/ubuntu/crewgooglegemini/001videototxt/output_transcript.json'
-            with open(output_script_path, 'w') as f:
-                json.dump({"script": script}, f)
-            print(f"Script generated and saved to {output_script_path}")
-            
-            # Log the transcript
-            log_transcript(transcript_text, new_video_title)
-            print(colored("Transcript logged successfully.", "green"))
-    
-    
-        # --- Step 4: Generate Audio ---
-        VOICE_OVER_FOLDER = "/home/ubuntu/crewgooglegemini/001videototxt/voice_over"
-        ensure_folder_exists(VOICE_OVER_FOLDER)
-        audio_path = os.path.join(VOICE_OVER_FOLDER, "voiceover.wav")
-        print("Generating audio...")
-        await generate_audio(script, audio_path)
-        print(f"Audio saved to {audio_path}")
-    
-        # --- Step 5: Transcribe Audio ---
-        print("Transcribing audio...")
-        transcription = transcribe_locally(audio_path)
-        print("Transcription completed.")
-        TRANSCRIPT_FOLDER = "/home/ubuntu/crewgooglegemini/001videototxt/transcripts"
-        ensure_folder_exists(TRANSCRIPT_FOLDER)
-        transcript_filename = os.path.join(TRANSCRIPT_FOLDER, f"{os.path.basename(audio_path).replace('.wav', '')}_transcription.txt")
-        with open(transcript_filename, 'w') as f:
-            if isinstance(transcription, list):
-                for segment in transcription:
-                    words_json = json.dumps(segment['words'], default=lambda x: float(x) if isinstance(x, np.float64) else x)
-                    f.write(f"{segment['start']} {segment['end']} {segment['text']} {words_json}\n")
-            else:
-                f.write(transcription)
-        print(f"Transcription saved to {transcript_filename}")
-    
-        segments = extract_transcript_segments(transcription)
-        print(f"Extracted {len(segments)} segments from the transcript.")
-    
-    
-        # --- Step 5b: Process transcript for image-video segments ---
-        print("Processing transcript for image-video segments...")
-        transcript_data = parse_transcript_file(transcript_filename)
-        segments_image_vid = extract_transcript_segments_image_vid(transcript_data)
-        
-        # Save the result to a JSON file in the same directory as the transcript
-        output_file = os.path.join(TRANSCRIPT_FOLDER, 'image_video.json')
-        with open(output_file, 'w') as f:
-            json.dump(segments_image_vid, f, indent=4)
-        
-        print(f"Image-video segments have been saved to {output_file}")
-        print(f"Extracted {len(segments_image_vid)} image-video segments from the transcript.")
-    
-      #-------------------------------------------------------------------------------------------  
-    
-        # --- Step 5c: Generate image prompts for segments ---
-        print("Generating image prompts for segments...")
-        
-        # Load the full transcript
-        full_transcript_file = '/home/ubuntu/crewgooglegemini/001videototxt/output_transcript.json'
-        with open(full_transcript_file, 'r') as f:
-            full_transcript = json.load(f)
-        
-        # Ensure full_transcript is a string
-        if isinstance(full_transcript, dict):
-            full_transcript = full_transcript.get('script', '')
-        elif not isinstance(full_transcript, str):
-            full_transcript = str(full_transcript)
-        
-        # Load the image-video segments
-        with open(output_file, 'r') as f:
-            segments = json.load(f)
-        
-        # Process segments in batches
-        batch_size = 5
-        image_prompts = []
-        
-        for i in range(0, len(segments), batch_size):
-            batch = segments[i:i+batch_size]
-            batch_prompts = generate_image_prompts_batch(batch, full_transcript)
-            image_prompts.extend(batch_prompts)
-            
-           # print(f"Processed batch {i//batch_size + 1} of {(len(segments)-1)//batch_size + 1}")
-        
-        # Save all generated prompts to current_prompt.json (overwrite existing data)
-        prompt_file = '/home/ubuntu/crewgooglegemini/current_prompt.json'
-        with open(prompt_file, 'w') as f:
-            json.dump(image_prompts, f, indent=4)
-        
-        print(f"Generated {len(image_prompts)} image prompts and saved to {prompt_file}")
-    #----------------------------------------------------------------------------------------------------------
-        # --- Step 5d: Generate images for each prompt ---
-        print(colored("Step 5d: Generating images for each prompt...", "cyan"))
-        process_and_generate_images()
-    #------------------------------------------------------------------------------------------------------------
-  # --- step5e: Call this function in your main script for Step 5e
-        step_5e_generate_video_clips()
-    
-    
-    
-        PIXABAY_FOLDER = "/home/ubuntu/crewgooglegemini/PIXABAY VIDEOS"
-        # CUSTOM_FOLDER = "/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/GameGuruHQ"
-        #CUSTOM_FOLDER = "/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/GoGlobeTv"
-        #CUSTOM_FOLDER = "/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/EntrepreneurGramTV"
-        #CUSTOM_FOLDER = "/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/HappyBabiesGram"
-        #CUSTOM_FOLDER = "/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/HealthWiseHQ"
-        #CUSTOM_FOLDER = "/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/Trendz-AI"
-        CUSTOM_FOLDER = "/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/WellnessGram"
-        #CUSTOM_FOLDER = "/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/MindfulSnapz"
-        #CUSTOM_FOLDER = "/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/FashionzHype"
-    
-    
-        # Simulate video search and download
-        downloaded_videos, video_titles, durations = search_and_download_best_videos(PIXABAY_FOLDER, CUSTOM_FOLDER)
-        print(f"Downloaded {len(downloaded_videos)} videos.")
-        for i, (video_path, title, duration) in enumerate(zip(downloaded_videos, video_titles, durations), start=1):
-            print(f"Video {i}: {title} ({duration:.2f} seconds) at path: {video_path}")
-    
-        # --- Step 6: Concatenate Videos and Add Voice Over ---
-        video_segments = load_video_segments(TRANSCRIPT_FOLDER)
-        PIXABAY_FOLDER = "/home/ubuntu/crewgooglegemini/PIXABAY VIDEOS"
-        VOICE_OVER_FOLDER = "/home/ubuntu/crewgooglegemini/001videototxt/voice_over"
-        voice_over_file = os.path.join(VOICE_OVER_FOLDER, "voiceover.wav")
-    
-        print("Concatenating videos and adding voice over...")
-        video_clips = []
-        for i, (video_path, duration) in enumerate(zip(downloaded_videos, durations)):
-            clip = VideoFileClip(video_path)
-            if clip.duration > 0:
-                resized_clip = resize_video(clip, target_width=1080, target_height=1920, duration=duration)
-                if resized_clip.duration < duration:
-                    loop_count = int(duration // resized_clip.duration) + 1
-                    extended_clip = concatenate_videoclips([resized_clip] * loop_count)
-                    trimmed_clip = extended_clip.subclip(0, duration)
-                else:
-                    trimmed_clip = resized_clip.subclip(0, duration)
-                video_clips.append(trimmed_clip)
-            else:
-                print(f"Warning: Skipping empty clip {video_path}")
-        print(f"Number of clips to concatenate: {len(video_clips)}")
-        if len(video_clips) > 0:
-            final_clip = concatenate_videoclips(video_clips, method="compose")
+    # Step 5: Transcribe Audio
+    print("Transcribing audio...")
+    transcription = transcribe_locally(audio_path)
+    print("Transcription completed.")
+    TRANSCRIPT_FOLDER = "/home/ubuntu/crewgooglegemini/001videototxt/transcripts"
+    ensure_folder_exists(TRANSCRIPT_FOLDER)
+    transcript_filename = os.path.join(TRANSCRIPT_FOLDER, f"{os.path.basename(audio_path).replace('.wav', '')}_transcription.txt")
+    with open(transcript_filename, 'w') as f:
+        if isinstance(transcription, list):
+            for segment in transcription:
+                words_json = json.dumps(segment['words'], default=lambda x: float(x) if isinstance(x, np.float64) else x)
+                f.write(f"{segment['start']} {segment['end']} {segment['text']} {words_json}\n")
         else:
-            raise ValueError("No valid video clips available for concatenation.")
-    
-        audio = AudioFileClip(audio_path)
-        if final_clip.duration < audio.duration:
-            difference = audio.duration - final_clip.duration
-            print(f"Video is {difference:.2f} seconds shorter than the audio. Extending video.")
-            last_clip = video_clips[-1]
-            loops_needed = int(difference // last_clip.duration) + 1
-            extension_clip = concatenate_videoclips([last_clip] * loops_needed)
-            extension_clip = extension_clip.subclip(0, difference)
-            final_clip = concatenate_videoclips([final_clip, extension_clip], method="compose")
-        final_clip = final_clip.subclip(0, audio.duration)
-    
-       
+            f.write(transcription)
+    print(f"Transcription saved to {transcript_filename}")
 
-# ====  Step 7, add bg sound
-        
-        bg_sound = get_background_sound(audio.duration)
-    
-        combined_audio = CompositeAudioClip([audio, bg_sound])
-        final_clip = final_clip.set_audio(combined_audio)
-        print(f"Final video duration: {final_clip.duration:.2f} seconds")
-        print(f"Audio duration: {audio.duration:.2f} seconds")
-        fade_duration = 1  # seconds
-        final_clip = final_clip.fx(fadeout, duration=fade_duration)
-        final_audio = final_clip.audio.fx(audio_fadeout, duration=fade_duration)
-        final_clip = final_clip.set_audio(final_audio)
-    
-        # --- Step 7: Write Final Video and Add Captions ---
-        #output_dir = "/home/ubuntu/crewgooglegemini/001videototxt"
-        #output_dir = "/home/ubuntu/crewgooglegemini/FINALVIDEOS/GoGlobeTv"
-        #output_dir = "/home/ubuntu/crewgooglegemini/FINALVIDEOS/HappyBabiesGram"
-        #output_dir = "/home/ubuntu/crewgooglegemini/FINALVIDEOS/HealthWiseHQ"
-        #output_dir = "/home/ubuntu/crewgooglegemini/FINALVIDEOS/Trendz-AI"
-        output_dir = "/home/ubuntu/crewgooglegemini/FINALVIDEOS/WellnessGram"
-        #output_dir = "/home/ubuntu/crewgooglegemini/FINALVIDEOS/MindfulSnapz"
-        #output_dir = "/home/ubuntu/crewgooglegemini/FINALVIDEOS/EntrepreneurGramTV"
-        #output_dir = "/home/ubuntu/crewgooglegemini/FINALVIDEOS/FashionzHype"
+    segments = extract_transcript_segments(transcription)
+    print(f"Extracted {len(segments)} segments from the transcript.")
 
-        safe_title = make_safe_filename(new_video_title)
+    # Step 5b: Process transcript for image-video segments
+    print("Processing transcript for image-video segments...")
+    transcript_data = parse_transcript_file(transcript_filename)
+    segments_image_vid = extract_transcript_segments_image_vid(transcript_data)
+    output_file = os.path.join(TRANSCRIPT_FOLDER, 'image_video.json')
+    with open(output_file, 'w') as f:
+        json.dump(segments_image_vid, f, indent=4)
+    print(f"Image-video segments have been saved to {output_file}")
 
-        os.makedirs(output_dir, exist_ok=True)
-        intermediate_output = os.path.join(output_dir, f"{safe_title}_intermediate_video_with_audio.mp4")
-        final_clip.write_videofile(
-            intermediate_output,
-            codec="libx264",
-            audio_codec="aac",
-            ffmpeg_params=[
-                '-pix_fmt', 'yuv420p',
-                '-preset', 'medium',
-                '-crf', '23',
-                "-bufsize", "16M",
-                "-maxrate", "8M",
-                '-profile:v', 'high'
-            ],
-            threads=8,
-            verbose=False
-        )
-    
-        output_file_path = os.path.join(output_dir, f"{safe_title}.mp4")
-        add_captions(
-            video_file=intermediate_output,
-            output_file=output_file_path,
-            font="Bangers-Regular.ttf",
-            font_size=80,
-            font_color="yellow",
-            stroke_width=3,
-            stroke_color="black",
-            highlight_current_word=True,
-            word_highlight_color="red",
-            line_count=2,
-            padding=50,
-            shadow_strength=1.0,
-            shadow_blur=0.1,
-            print_info=True,
-            segments=video_segments  # Pass the loaded video segments directly
-        )
-    
-        # Remove the intermediate file if desired
-        if os.path.exists(intermediate_output):
-            os.remove(intermediate_output)
-        # Remove all .mp4 files from the active CUSTOM_FOLDER
-        if os.path.exists(CUSTOM_FOLDER):
-            for file in os.listdir(CUSTOM_FOLDER):
-                if file.endswith(".mp4"):
-                    file_path = os.path.join(CUSTOM_FOLDER, file)
-                    os.remove(file_path)
-                    #print(f"Removed: {file_path}")
-        print(f"Final video with captions saved as {output_file_path}")
-        time.sleep(2)
-        clear_output(wait=True)
-        time.sleep(3)
-    
-        # Step 5f: Send final video and transcript to Telegram
-        step_5f_send_to_telegram()
-        time.sleep(3)
+    # Step 5c: Generate image prompts for segments
+    print("Generating image prompts for segments...")
+    full_transcript_file = '/home/ubuntu/crewgooglegemini/001videototxt/output_transcript.json'
+    with open(full_transcript_file, 'r') as f:
+        full_transcript = json.load(f)
+    if isinstance(full_transcript, dict):
+        full_transcript = full_transcript.get('script', '')
+    elif not isinstance(full_transcript, str):
+        full_transcript = str(full_transcript)
+    with open(output_file, 'r') as f:
+        segments = json.load(f)
+    batch_size = 5
+    image_prompts = []
+    for i in range(0, len(segments), batch_size):
+        batch = segments[i:i+batch_size]
+        batch_prompts = generate_image_prompts_batch(batch, full_transcript)
+        image_prompts.extend(batch_prompts)
+    prompt_file = '/home/ubuntu/crewgooglegemini/current_prompt.json'
+    with open(prompt_file, 'w') as f:
+        json.dump(image_prompts, f, indent=4)
+    print(f"Generated {len(image_prompts)} image prompts and saved to {prompt_file}")
 
-        # Call step_5g_upload_to_google_drive to upload the latest video and transcript
-        step_5g_upload_to_google_drive()
-        time.sleep(3)
-    
-        if option == "3":
-            new_links_file = "/home/ubuntu/crewgooglegemini/AUTO/Newlinks.txt"
-            used_links_file = "/home/ubuntu/crewgooglegemini/AUTO/Usedlinks.txt"
-            
-            with open(new_links_file, 'r') as file:
-                lines = file.readlines()
-            
-            if lines:
-                with open(used_links_file, 'a') as used_file:
-                    used_file.write(lines[0])
-                
-                with open(new_links_file, 'w') as new_file:
-                    new_file.writelines(lines[1:])
-                
-                print(f"Moved processed link to Usedlinks.txt")
-            
-            print("Processing complete. Ready for next iteration.")
+    # Step 5d: Generate images for each prompt
+    print(colored("Step 5d: Generating images for each prompt...", "cyan"))
+    process_and_generate_images()
+    step_5e_generate_video_clips()
 
+    PIXABAY_FOLDER = "/home/ubuntu/crewgooglegemini/PIXABAY VIDEOS"
+    CUSTOM_FOLDER = "/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/WellnessGram"
+    downloaded_videos, video_titles, durations = search_and_download_best_videos(PIXABAY_FOLDER, CUSTOM_FOLDER)
+    print(f"Downloaded {len(downloaded_videos)} videos.")
+    for i, (video_path, title, duration) in enumerate(zip(downloaded_videos, video_titles, durations), start=1):
+        print(f"Video {i}: {title} ({duration:.2f} seconds) at path: {video_path}")
 
+    video_segments = load_video_segments(TRANSCRIPT_FOLDER)
+    voice_over_file = audio_path
 
-# ---------------------------------------------------------------------------
-# Run the main function
-# ---------------------------------------------------------------------------
+    print("Concatenating videos and adding voice over...")
+    video_clips = []
+    for i, (video_path, duration) in enumerate(zip(downloaded_videos, durations)):
+        clip = VideoFileClip(video_path)
+        if clip.duration > 0:
+            resized_clip = resize_video(clip, target_width=1080, target_height=1920, duration=duration)
+            if resized_clip.duration < duration:
+                loop_count = int(duration // resized_clip.duration) + 1
+                extended_clip = concatenate_videoclips([resized_clip] * loop_count)
+                trimmed_clip = extended_clip.subclip(0, duration)
+            else:
+                trimmed_clip = resized_clip.subclip(0, duration)
+            video_clips.append(trimmed_clip)
+        else:
+            print(f"Warning: Skipping empty clip {video_path}")
+    print(f"Number of clips to concatenate: {len(video_clips)}")
+    if len(video_clips) > 0:
+        final_clip = concatenate_videoclips(video_clips, method="compose")
+    else:
+        raise ValueError("No valid video clips available for concatenation.")
+
+    audio = AudioFileClip(audio_path)
+    if final_clip.duration < audio.duration:
+        difference = audio.duration - final_clip.duration
+        print(f"Video is {difference:.2f} seconds shorter than the audio. Extending video.")
+        last_clip = video_clips[-1]
+        loops_needed = int(difference // last_clip.duration) + 1
+        extension_clip = concatenate_videoclips([last_clip] * loops_needed)
+        extension_clip = extension_clip.subclip(0, difference)
+        final_clip = concatenate_videoclips([final_clip, extension_clip], method="compose")
+    final_clip = final_clip.subclip(0, audio.duration)
+
+    # Step 7, add bg sound
+    bg_sound = get_background_sound(audio.duration)
+    combined_audio = CompositeAudioClip([audio, bg_sound])
+    final_clip = final_clip.set_audio(combined_audio)
+    print(f"Final video duration: {final_clip.duration:.2f} seconds")
+    print(f"Audio duration: {audio.duration:.2f} seconds")
+    fade_duration = 1  # seconds
+    final_clip = final_clip.fx(fadeout, duration=fade_duration)
+    final_audio = final_clip.audio.fx(audio_fadeout, duration=fade_duration)
+    final_clip = final_clip.set_audio(final_audio)
+
+    # Step 7: Write Final Video and Add Captions
+    output_dir = "/home/ubuntu/crewgooglegemini/FINALVIDEOS/WellnessGram"
+    safe_title = make_safe_filename(new_video_title)
+    os.makedirs(output_dir, exist_ok=True)
+    intermediate_output = os.path.join(output_dir, f"{safe_title}_intermediate_video_with_audio.mp4")
+    final_clip.write_videofile(
+        intermediate_output,
+        codec="libx264",
+        audio_codec="aac",
+        ffmpeg_params=[
+            '-pix_fmt', 'yuv420p',
+            '-preset', 'medium',
+            '-crf', '23',
+            "-bufsize", "16M",
+            "-maxrate", "8M",
+            '-profile:v', 'high'
+        ],
+        threads=8,
+        verbose=False
+    )
+
+    output_file_path = os.path.join(output_dir, f"{safe_title}.mp4")
+    add_captions(
+        video_file=intermediate_output,
+        output_file=output_file_path,
+        font="Bangers-Regular.ttf",
+        font_size=80,
+        font_color="yellow",
+        stroke_width=3,
+        stroke_color="black",
+        highlight_current_word=True,
+        word_highlight_color="red",
+        line_count=2,
+        padding=50,
+        shadow_strength=1.0,
+        shadow_blur=0.1,
+        print_info=True,
+        segments=video_segments
+    )
+
+    if os.path.exists(intermediate_output):
+        os.remove(intermediate_output)
+    if os.path.exists(CUSTOM_FOLDER):
+        for file in os.listdir(CUSTOM_FOLDER):
+            if file.endswith(".mp4"):
+                file_path = os.path.join(CUSTOM_FOLDER, file)
+                os.remove(file_path)
+    print(f"Final video with captions saved as {output_file_path}")
+    time.sleep(2)
+    clear_output(wait=True)
+    time.sleep(3)
+
+    step_5f_send_to_telegram()
+    time.sleep(3)
+    step_5g_upload_to_google_drive()
+    time.sleep(3)
+
 if __name__ == "__main__":
     try:
         import nest_asyncio
-        nest_asyncio.apply()  # For nested asyncio loops in Colab or Jupyter
+        nest_asyncio.apply()
         loop = asyncio.get_event_loop()
         loop.run_until_complete(main())
     except Exception as e:
