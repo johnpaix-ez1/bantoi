@@ -1,0 +1,2968 @@
+## UPLOAD OR PASTE LINK OF ANY VIDEO YOU LIKE TO GET TRANSCRIPTS AND CREATE A VIDEO
+   # Clear all variables
+
+
+
+!pip install -U yt-dlp
+
+!sudo rm /usr/local/bin/ffmpeg
+# !cp /home/ubuntu/crewgooglegemini/CAPTACITY/ffmpeg /usr/local/bin/
+# !chmod +x /usr/local/bin/ffmpeg
+
+import os
+
+# # Set the FFMPEG_BINARY environment variable to the location of ffmpeg
+##os.environ['FFMPEG_BINARY'] = '/usr/bin/ffmpeg'
+
+#os.environ['IMAGEMAGICK_BINARY'] = '/usr/bin/convert'
+
+
+# Navigate to your project folder in Drive
+%cd /home/ubuntu/crewgooglegemini/CAPTACITY/captacity
+
+
+from moviepy.editor import *
+from tqdm.notebook import tqdm
+import shutil
+from moviepy.editor import ImageClip, vfx
+from moviepy.video.io.ffmpeg_tools import ffmpeg_extract_subclip
+from moviepy.video.fx.resize import resize  # Import resize for zooming
+from moviepy.video.io.ffmpeg_tools import ffmpeg_extract_subclip
+from moviepy.editor import VideoFileClip, AudioFileClip, concatenate_videoclips, CompositeVideoClip, CompositeAudioClip
+import subprocess
+import tempfile
+from bs4 import BeautifulSoup
+from googleapiclient.discovery import build
+import time
+import requests
+import asyncio
+import ast
+import ssl
+import re
+import json
+import random
+from telegram import Bot
+import torch
+import cv2
+import websocket
+import uuid
+import urllib.request
+import urllib.parse
+from PIL import Image
+import io
+import edge_tts
+from termcolor import colored
+import datetime
+import os
+import glob
+import shutil
+from websocket import WebSocketConnectionClosedException, WebSocketTimeoutException
+from jsonschema import validate, ValidationError
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.schema import HumanMessage
+from groq import Groq
+import yt_dlp  # For downloading YouTube videos
+import moviepy.editor as mp
+from datetime import datetime
+#from ultralytics import YOLO
+from urllib.parse import urlparse, unquote
+import numpy as np
+import google.generativeai as genai
+from dotenv import load_dotenv
+from script_generator import generate_script
+from audio_generator import generate_audio
+from transcriber import transcribe_locally
+from moviepy.video.fx.all import fadeout
+from moviepy.audio.fx.all import audio_fadeout
+from pexelsapi.pexels import Pexels
+from pydantic import ValidationError
+from jsonschema import validate
+import wave
+from IPython.display import clear_output
+from pydub import AudioSegment
+from unidecode import unidecode
+import segment_parser
+import transcriber
+from text_drawer import (
+    get_text_size_ex,
+    create_text_ex,
+    blur_text_clip,
+    Word,
+)
+
+shadow_cache = {}
+lines_cache = {}
+#from ._init_ import add_captions, fits_frame, calculate_lines, create_shadow, get_font_path, detect_local_whisper
+
+
+# # Groq API setup
+load_dotenv()
+
+# Ensure Gemini API key is set in environment variables
+gemini_api_key = os.getenv("GEMINI_API_KEY")  # Change this to your actual variable name if different
+if gemini_api_key is None:
+    raise ValueError("GEMINI_API_KEY environment variable not set")
+
+# Set up the API key
+# os.environ['GOOGLE_API_KEY'] = 'AIzaSyDZzoZ9xAox4XKRo0c9l5RLBOLTGU3UcAc'
+# genai.configure(api_key=os.environ['GOOGLE_API_KEY'])
+
+# Configure the Gemini API client
+# genai.configure(api_key=gemini_api_key)
+model = genai.GenerativeModel("gemini-2.0-flash")  # Change model as needed
+
+# Ensure folder exists utility
+def ensure_folder_exists(folder):
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+
+
+def select_random_duration(min_time=3, max_time=7):
+    """
+    Select a random duration between min_time and max_time seconds.
+    """
+    return random.randint(min_time, max_time)
+
+
+def get_audio_duration(file_path):
+    """Get the duration of an audio file in seconds."""
+    audio = AudioSegment.from_wav(file_path)
+    return audio.duration_seconds
+
+
+def extract_transcript_segments(transcript):
+    """
+    Extract segments of the transcript based on start times.
+    If a segment duration is less than 3 seconds, merge it with the next valid segment.
+    """
+    segments = []
+    durations = []  # To store the calculated durations
+    i = 0
+    total_duration = 0
+
+    # Get the total voice-over duration from the END of the last segment
+    voice_over_duration = transcript[-1]['end'] if transcript else 0
+
+    while i < len(transcript):
+        current_start_time = transcript[i]['start']
+        next_start_time = None
+        j = i + 1
+
+        # Find the next valid start time after merging short segments
+        while j < len(transcript):
+            next_start_time = transcript[j]['start']
+            duration = next_start_time - current_start_time
+            if duration >= 3.5:  # Valid duration found
+                break
+            j += 1  # Merge this short segment and move to the next one
+
+        if next_start_time is None:  # If no more valid segments, stop
+            # Calculate the duration until the END of the transcript
+            final_duration = voice_over_duration - current_start_time
+            if final_duration > 0:
+                segments.append(transcript[i:])
+                durations.append(final_duration)
+                total_duration += final_duration
+            break
+
+        # Calculate the valid duration
+        duration = next_start_time - current_start_time
+
+        # Store the segment and duration
+        segment = transcript[i:j]  # Includes the merged segments
+        segments.append(segment)
+        durations.append(duration)
+        total_duration += duration
+
+        # Move to the next segment after merging
+        i = j
+
+    # Final check: Compare total duration with voice-over duration and adjust the last duration if necessary
+    if total_duration < voice_over_duration:
+        difference = voice_over_duration - total_duration
+        print(f"Total segment duration is {difference:.2f} seconds shorter than the voice-over.")
+        durations[-1] += difference
+        print(f"Adjusted the last segment duration. New total duration: {sum(durations):.2f} seconds")
+    elif total_duration > voice_over_duration:
+        difference = total_duration - voice_over_duration
+        print(f"Total segment duration is {difference:.2f} seconds longer than the voice-over.")
+        durations[-1] = max(durations[-1] - difference, 0)
+        print(f"Adjusted the last segment duration. New total duration: {sum(durations):.2f} seconds")
+    else:
+        print("Total segment duration matches the voice-over length.")
+
+    print(f"Voice-over duration: {voice_over_duration:.2f} seconds")
+    print(f"Final total segment duration: {sum(durations):.2f} seconds")
+
+    return segments,
+
+
+    # Set the maximum allowed total video duration (in seconds)
+#MAX_TOTAL_DURATION = 55
+
+
+def get_video_duration(video_path):
+    """Returns the duration of the video in seconds."""
+    try:
+        video = mp.VideoFileClip(video_path)
+        return video.duration
+    except Exception as e:
+        print(f"Error getting duration for {video_path}: {e}")
+        return 0
+
+
+def get_videos_from_custom_folder(custom_folder):
+    """Retrieve and sort videos from the custom folder by creation time."""
+    video_files = []
+    for filename in os.listdir(custom_folder):
+        if filename.lower().endswith(('.mp4', '.mov', '.avi', '.mkv')):
+            file_path = os.path.join(custom_folder, filename)
+            try:
+                creation_time = os.path.getctime(file_path)
+                video_files.append((creation_time, file_path))
+            except Exception as e:
+                print(f"Error accessing {file_path}: {e}")
+    # Sort videos by creation time (oldest first)
+    video_files.sort(key=lambda x: x[0])
+    return [file_path for _, file_path in video_files]
+
+
+
+def search_and_download_best_videos(download_dir, custom_folder, use_pexels=True):
+    downloaded_videos = []
+    video_titles = []
+    video_durations = []
+    total_duration = 0
+
+    # Step 1: Check the custom folder for videos
+    custom_videos = get_videos_from_custom_folder(custom_folder)
+    for video_path in custom_videos:
+        video_duration = get_video_duration(video_path)
+        downloaded_videos.append(video_path)
+        video_titles.append(os.path.splitext(os.path.basename(video_path))[0])
+        video_durations.append(video_duration)
+        total_duration += video_duration
+        print(f"Selected '{os.path.basename(video_path)}' from custom folder, total duration now {total_duration:.2f} seconds.")
+
+    # We're not using Step 2 anymore, as we're only using videos from the custom folder
+
+    return downloaded_videos, video_titles, video_durations
+
+
+
+def extract_title_from_url(video_url):
+    """
+    Extracts the video title from the video URL.
+    """
+    path = urlparse(video_url).path
+    # Split the path and get the last segment, then remove the video ID
+    title_with_id = path.split('/')[-2]
+    # Replace hyphens with spaces and decode any URL-encoded characters
+    title = unquote(title_with_id.replace('-', ' '))
+    return title
+
+def remove_trailing_numbers(title):
+    """
+    Removes trailing numbers from a string.
+    """
+    return re.sub(r'\d+$', '', title).strip()
+
+def download_from_pixabay(query, download_dir, total_duration):
+    PIXABAY_API_KEY = os.getenv('PIXABAY_KEY')
+    url = "https://pixabay.com/api/videos/"
+    params = {
+        "key": PIXABAY_API_KEY,
+        "q": query,
+        "orientation": "vertical",
+        "min_width": 1080,
+        "min_height": 1920,
+        "per_page": 50,
+        "video_type": "all"
+    }
+
+    downloaded_videos = []
+    video_titles = []
+    video_durations = []
+
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+
+        for hit in data['hits']:
+            video_duration = hit['duration']
+            video_url = hit['videos']['medium']['url']
+            video_title = extract_title_from_url(hit['pageURL'])
+            video_title = remove_trailing_numbers(video_title)
+            video_filename = f"{video_title}.mp4"
+            video_path = os.path.join(download_dir, video_filename)
+
+            if total_duration + video_duration > MAX_TOTAL_DURATION:
+                download_video(video_url, video_path)
+                downloaded_videos.append(video_path)
+                video_titles.append(video_title)
+                video_durations.append(video_duration)
+                total_duration += video_duration
+                print(f"Downloaded '{video_title}' as the last video, total duration now {total_duration} seconds.")
+                break
+            else:
+                download_video(video_url, video_path)
+                downloaded_videos.append(video_path)
+                video_titles.append(video_title)
+                video_durations.append(video_duration)
+                total_duration += video_duration
+                print(f"Downloaded '{video_title}', total duration now {total_duration} seconds.")
+    except requests.exceptions.RequestException as e:
+        print(f"Error while making a request to Pixabay API: {e}")
+
+    return downloaded_videos, video_titles, video_durations
+
+
+
+def download_video(video_url, save_path):
+    try:
+        response = requests.get(video_url, stream=True)
+        response.raise_for_status()
+        with open(save_path, 'wb') as video_file:
+            for chunk in response.iter_content(chunk_size=8192):
+                video_file.write(chunk)
+
+        print(f"Video saved to {save_path}")
+
+    except requests.exceptions.RequestException as e:
+        print(f"Error downloading video: {e}")
+
+def resize_video(clip, target_width, target_height, duration=None):
+    if duration is not None:
+        clip = clip.subclip(0, min(duration, clip.duration))
+
+    # Calculate scaling factor
+    scale = max(target_width / clip.w, target_height / clip.h)
+    new_size = (int(clip.w * scale), int(clip.h * scale))
+
+    # Resize the video
+    resized = clip.resize(height=new_size[1])
+
+    # Crop to target size
+    x_center = resized.w // 2
+    y_center = resized.h // 2
+    x1 = x_center - target_width // 2
+    y1 = y_center - target_height // 2
+    cropped = resized.crop(x1=x1, y1=y1, width=target_width, height=target_height)
+
+    return cropped
+
+
+
+
+
+def fits_frame(line_count, font, font_size, stroke_width, frame_width):
+    def fit_function(text):
+        lines = calculate_lines(
+            text,
+            font,
+            font_size,
+            stroke_width,
+            frame_width
+        )
+        return len(lines["lines"]) <= line_count
+    return fit_function
+
+def calculate_lines(text, font, font_size, stroke_width, frame_width):
+    global lines_cache
+
+    arg_hash = hash((text, font, font_size, stroke_width, frame_width))
+
+    if arg_hash in lines_cache:
+        return lines_cache[arg_hash]
+
+    lines = []
+
+    line_to_draw = None
+    line = ""
+    words = text.split()
+    word_index = 0
+    total_height = 0
+    while word_index < len(words):
+        word = words[word_index]
+        line += word + " "
+        text_size = get_text_size_ex(line.strip(), font, font_size, stroke_width)
+        text_width = text_size[0]
+        line_height = text_size[1]
+
+        if text_width < frame_width:
+            line_to_draw = {
+                "text": line.strip(),
+                "height": line_height,
+            }
+            word_index += 1
+        else:
+            if not line_to_draw:
+                print(f"NOTICE: Word '{line.strip()}' is too long for the frame!")
+                line_to_draw = {
+                    "text": line.strip(),
+                    "height": line_height,
+                }
+                word_index += 1
+
+            lines.append(line_to_draw)
+            total_height += line_height
+            line_to_draw = None
+            line = ""
+
+    if line_to_draw:
+        lines.append(line_to_draw)
+        total_height += line_height
+
+    data = {
+        "lines": lines,
+        "height": total_height,
+    }
+
+    lines_cache[arg_hash] = data
+
+    return data
+
+def ffmpeg(command):
+    return subprocess.run(command, capture_output=True)
+
+def create_shadow(text: str, font_size: int, font: str, blur_radius: float, opacity: float=1.0):
+    global shadow_cache
+
+    arg_hash = hash((text, font_size, font, blur_radius, opacity))
+
+    if arg_hash in shadow_cache:
+        return shadow_cache[arg_hash].copy()
+
+    shadow = create_text_ex(text, font_size, "black", font, opacity=opacity)
+    shadow = blur_text_clip(shadow, int(font_size*blur_radius))
+
+    shadow_cache[arg_hash] = shadow.copy()
+
+    return shadow
+
+# def get_font_path(font):
+#     if os.path.exists(font):
+#         return font
+
+#     dirname = os.path.dirname(__file__)
+#     font = os.path.join(dirname, "assets", "fonts", font)
+
+#     if not os.path.exists(font):
+#         raise FileNotFoundError(f"Font '{font}' not found")
+
+#     return font
+
+def get_font_path(font):
+    # Check if Font Exists Directly:
+    if os.path.exists(font):
+        return font
+
+    # Get the current working directory
+    dirname = os.path.abspath('')
+
+    # Search in Assets Folder:
+    font = os.path.join(dirname, "assets", "fonts", font)
+
+    if not os.path.exists(font):
+        raise FileNotFoundError(f"Font '{font}' not found")
+
+    return font
+
+def detect_local_whisper(print_info):
+    try:
+        import whisper
+        use_local_whisper = True
+        if print_info:
+            print("Using local whisper model...")
+    except ImportError:
+        use_local_whisper = False
+        if print_info:
+            print("Using OpenAI Whisper API...")
+
+    return use_local_whisper
+
+
+def add_captions(
+    video_file,
+    output_file = "with_transcript.mp4",
+
+    font = "Bangers-Regular.ttf",
+    font_size = 80,
+    font_color = "yellow",
+
+    stroke_width = 3,
+    stroke_color = "black",
+
+    highlight_current_word = True,
+    word_highlight_color = "red",
+
+    line_count = 2,
+    fit_function = None,
+
+    padding = 30,
+    position = ("center", "center"), # TODO: Implement this
+
+    shadow_strength = 1.0,
+    shadow_blur = 0.1,
+
+    print_info = False,
+
+    initial_prompt = None,
+    segments = None,
+
+):
+    _start_time = time.time()
+
+    font = get_font_path(font)
+
+
+    if print_info:
+        print("Generating video elements...")
+
+    # Open the video file
+    video = VideoFileClip(video_file)
+    text_bbox_width = video.w-padding*2
+    clips = [video]
+
+    captions = segment_parser.parse(
+        segments=segments,
+        fit_function=fit_function if fit_function else fits_frame(
+            line_count,
+            font,
+            font_size,
+            stroke_width,
+            text_bbox_width,
+        ),
+    )
+
+    for caption in captions:
+        captions_to_draw = []
+        if highlight_current_word:
+            for i, word in enumerate(caption["words"]):
+                if i+1 < len(caption["words"]):
+                    end = caption["words"][i+1]["start"]
+                else:
+                    end = word["end"]
+
+                captions_to_draw.append({
+                    "text": caption["text"],
+                    "start": word["start"],
+                    "end": end,
+                })
+        else:
+            captions_to_draw.append(caption)
+
+        for current_index, caption in enumerate(captions_to_draw):
+            line_data = calculate_lines(caption["text"], font, font_size, stroke_width, text_bbox_width)
+
+            #text_y_offset = video.h // 2 - line_data["height"] // 2
+            #original above
+
+
+            #    # Base Y position from bottom with padding
+            base_y_position = video.h - padding
+            ## Calculate total height for all lines
+            total_height = line_data["height"]
+            # Adjust Y offset to pull it up a little if needed (e.g., by 20 pixels)
+            text_y_offset = base_y_position - total_height - 370  # Adjust '20' as needed for spacing
+
+
+
+            index = 0
+            for line in line_data["lines"]:
+                pos = ("center", text_y_offset)
+                #pos = ("center", video.h - padding - line_data["height"])
+
+
+                words = line["text"].split()
+                word_list = []
+                for w in words:
+                    word_obj = Word(w)
+                    if highlight_current_word and index == current_index:
+                        word_obj.set_color(word_highlight_color)
+                    index += 1
+                    word_list.append(word_obj)
+
+                # Create shadow
+                shadow_left = shadow_strength
+                while shadow_left >= 1:
+                    shadow_left -= 1
+                    shadow = create_shadow(line["text"], font_size, font, shadow_blur, opacity=1)
+                    shadow = shadow.set_start(caption["start"])
+                    shadow = shadow.set_duration(caption["end"] - caption["start"])
+                    shadow = shadow.set_position(pos)
+                    clips.append(shadow)
+
+                if shadow_left > 0:
+                    shadow = create_shadow(line["text"], font_size, font, shadow_blur, opacity=shadow_left)
+                    shadow = shadow.set_start(caption["start"])
+                    shadow = shadow.set_duration(caption["end"] - caption["start"])
+                    shadow = shadow.set_position(pos)
+                    clips.append(shadow)
+
+                # Create text
+                text = create_text_ex(word_list, font_size, font_color, font, stroke_color=stroke_color, stroke_width=stroke_width)
+                text = text.set_start(caption["start"])
+                text = text.set_duration(caption["end"] - caption["start"])
+                text = text.set_position(pos)
+                clips.append(text)
+
+                text_y_offset += line["height"]
+
+    end_time = time.time()
+    generation_time = end_time - _start_time
+
+    if print_info:
+        print(f"Generated in {generation_time//60:02.0f}:{generation_time%60:02.0f} ({len(clips)} clips)")
+
+    if print_info:
+        print("Rendering video...")
+
+    video_with_text = CompositeVideoClip(clips)
+
+    # video_with_text.write_videofile(
+    #     filename=output_file,
+    #     codec="h264_nvenc",  # Use NVIDIA NVENC for H.264 encoding
+    #     fps=30,
+    #     threads=2,  # Let FFmpeg decide the number of threads
+    #     logger="bar" if print_info else None,
+    #     ffmpeg_params=[
+    #         "-preset", "slow",      # Use 'medium' for a balance between speed and quality
+    #         "-b:v", "3500k",          # Set target bitrate to 2500 kbps (2.5 Mbps) for good quality
+    #         "-maxrate:v", "4000k",    # Maximum bitrate set to 2500 kbps
+    #         "-bufsize:v", "8000k",
+    #         "-crf", "23",
+    #         "-pix_fmt", "yuv420p"                        # Buffer size (2x maxrate is a good rule of thumb)
+    #     ]
+    # )
+
+
+    video_with_text.write_videofile(
+    filename=output_file,
+    codec="libx264",
+    fps=30,
+    threads=6,
+    #logger="bar" if print_info else None,
+    logger=None,
+    ffmpeg_params=[
+        "-preset", "slow",
+        "-crf", "23",
+        "-bufsize", "8000k",
+        "-maxrate", "4000k",
+        "-pix_fmt", "yuv420p"
+    ]
+)
+
+
+
+
+
+    end_time = time.time()
+    total_time = end_time - _start_time
+    render_time = total_time - generation_time
+
+    if print_info:
+        print(f"Generated in {generation_time//60:02.0f}:{generation_time%60:02.0f}")
+        print(f"Rendered in {render_time//60:02.0f}:{render_time%60:02.0f}")
+        print(f"Done in {total_time//60:02.0f}:{total_time%60:02.0f}")
+
+
+
+def load_video_segments(transcript_folder):
+    transcript_files = [f for f in os.listdir(transcript_folder) if f.endswith('_transcription.txt')]
+
+    if not transcript_files:
+        raise FileNotFoundError("No transcript files found in the specified folder.")
+
+    transcript_filename = os.path.join(transcript_folder, sorted(transcript_files)[-1])
+
+    segments = []
+
+    with open(transcript_filename, 'r') as f:
+        for line in f:
+            #print("Reading line:", line)  # This will show you each line being read
+
+            match = re.match(r'(\d+\.\d+)\s+(\d+\.\d+)\s+(.*?)\s+(\[.*\])$', line.strip())
+            if match:
+                start_time, end_time, text, words_str = match.groups()
+
+                try:
+                    # Safely evaluate words_str using ast.literal_eval
+                    words = ast.literal_eval(words_str)
+
+                    # Ensure words are properly formatted (if necessary)
+                    if not isinstance(words, list):
+                        raise ValueError(f"Expected a list but got {type(words)}")
+
+                except Exception as e:
+                    print(f"Error parsing words for segment: {text}. Exception: {e}")
+                    words = []  # Fallback to an empty list if parsing fails
+
+                segments.append({
+                    'start': float(start_time),
+                    'end': float(end_time),
+                    'text': text,
+                    'words': words,
+                })
+
+    print(f"Loaded {len(segments)} segments from {transcript_filename}.")
+    return segments
+
+
+
+# Initialize the YOLO model
+def load_yolo_model(model_path='yolov5s.pt'):
+    model = torch.hub.load('ultralytics/yolov5', 'custom', path=model_path)  # Load custom model if needed
+    model.eval()  # Set model to evaluation mode
+    return model
+
+def analyze_video_with_yolo(video_path, model):
+    cap = cv2.VideoCapture(video_path)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+
+    detections = []
+    object_durations = {}
+
+    frame_idx = 0
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Run YOLOv5 object detection
+        results = model(frame)
+
+        # Process results
+        for det in results.xyxy[0]:  # det is (x1, y1, x2, y2, conf, cls)
+            x1, y1, x2, y2, conf, cls = det.cpu().numpy()
+            if conf > 0.7:  # Confidence threshold
+                class_name = results.names[int(cls)]
+                detections.append({
+                    "frame": frame_idx,
+                    "class": class_name,
+                    "confidence": float(conf),
+                    "bbox": [x1, y1, x2, y2]
+                })
+
+                # Update object durations
+                if class_name not in object_durations:
+                    object_durations[class_name] = {"start_frame": frame_idx, "duration": 1}
+                else:
+                    object_durations[class_name]["duration"] += 1
+
+        frame_idx += 1
+
+        if frame_idx >= frame_count:
+            break
+
+    cap.release()
+
+    preprocessed_data = preprocess_yolo_output(detections, object_durations, fps)
+    print("Preprocessed Data:", preprocessed_data)
+    return preprocessed_data
+
+
+
+def preprocess_yolo_output(detections, object_durations, fps):
+    preprocessed = {
+        "scene_description": [],
+        "objects": []
+    }
+
+    # Create a scene description and summarize detections
+    for class_name, duration_info in object_durations.items():
+        start_time = duration_info["start_frame"] / fps
+        duration = duration_info["duration"] / fps
+
+        # Only include objects with a duration of 1 second or more
+        if duration >= 1.0:
+            # Find the first detection for this class to get a representative bbox
+            representative_detection = next((d for d in detections if d["class"] == class_name), None)
+            bbox = representative_detection["bbox"] if representative_detection else None
+
+            # Add to summary
+            preprocessed["objects"].append({
+                "class": class_name,
+                "start_time": start_time,
+                "duration": duration,
+                "bbox": bbox
+            })
+
+            # Scene description (can be customized)
+            description = f"A {class_name} appeared at {start_time:.2f} seconds for {duration:.2f} seconds."
+            preprocessed["scene_description"].append(description)
+
+    return preprocessed
+
+
+# prep data with numpy
+def numpy_to_list(obj):
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {k: numpy_to_list(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [numpy_to_list(i) for i in obj]
+    elif isinstance(obj, np.generic):
+        return obj.item()
+    return obj
+
+
+# preparing the data for script generation
+def prepare_data_for_script_generation(all_video_data):
+    prepared_data = []
+    for video in all_video_data:
+        prepared_video = {
+            "title": video["title"]
+        }
+        prepared_data.append(prepared_video)
+    return prepared_data
+
+
+# Utility function to ensure a folder exists
+def ensure_folder_exists(folder_path):
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
+
+
+# JSON validation function
+def validate_json_structure(data, schema):
+    try:
+        validate(instance=data, schema=schema)
+        return True
+    except ValidationError as e:
+        print(f"Validation error: {e}")
+        return False
+
+# Updated schema
+expected_schema = {
+    "type": "object",
+    "properties": {
+        "new_video_title": {"type": "string"},
+        "script": {"type": "string"},
+        "keywords": {"type": "array", "items": {"type": "string"}}
+    },
+    "required": ["new_video_title", "script", "keywords"]
+}
+
+# Function to generate the script
+def generate_script_from_video(transcript):
+    prompt = f"""You are an expert content creator for a YouTube channel that produces concise, engaging, and insightful videos.
+    Your task is to analyze the provided transcript and transform it into an **exceptionally compelling and unforgettable YouTube script** that makes viewers feel they've stumbled upon something truly unique and insightful. The goal is to maximize deep engagement, watch time, and a desire to share.
+
+    - **Craft an Electrifying Introduction:** Start with a hook that is not just attention-grabbing but *paradigm-shifting* for the viewer regarding the topic. This could be a startling reframe of a common assumption, a deeply counter-intuitive question, a bold, almost unbelievable claim (that the script will then substantiate), or a vivid, unexpected analogy related to the transcript's core message. Aim for immediate intrigue and a "I *need* to know more" reaction. Examples of powerful hook approaches (adapt to the content): 'What if everything you thought you knew about X was a carefully constructed illusion?', 'The one tiny detail about Y that changes absolutely everything...', 'Forget X, Y, and Z; the *real* story behind [topic] is far more [adjective] than anyone dares to admit.'
+
+    - **Deliver Content as a Riveting Unveiling:** Present the information not just clearly, but as a journey of discovery. Employ dynamic, conversational language that feels like an insider sharing groundbreaking secrets.
+        - Use leading phrases that build anticipation and a sense of unique insight: 'But here's where it gets truly mind-bending...', 'The hidden layer most people miss is...', 'Consider this unexpected connection...', 'What if the real story is far stranger/simpler/more profound than we're led to believe?'
+        - Weave in moments of **dramatic emphasis, unexpected comparisons, or sharp contrasts** to make key points land with impact and stick in the viewer's mind.
+        - The script must feel like a human sharing a passionate, almost urgent message, not a dry recitation of facts. Infuse it with genuine curiosity and a sense of wonder or revelation.
+
+    - **Engineer Engagement:**
+        - **Maximize Curiosity Gaps:** Strategically pose questions or hint at revelations that compel viewers to keep watching to find the answer.
+        - **Introduce Unexpected Twists or Perspectives:** If the transcript allows, present information in a way that challenges common perceptions or reveals a surprising angle on the topic. This should be done without being misleading or resorting to clickbait.
+        - **Amplify Emotional Resonance (Authentically):** Where appropriate to the content, connect with the viewer on an emotional level. This isn't about forced sentimentality, but about highlighting the human impact, the 'wow' factor, the profound implications, or the sheer fascination of the information. Use vivid, evocative language.
+        - **Viral-Optimized Tone (Substance over Hype):** The tone should be compelling and shareable, like top-tier educational or insight-driven YouTube channels. Focus on making the *substance itself* feel shocking, surprising, or highly relevant, rather than just using superficial hype. Persuasive language should stem from the power of the ideas being presented.
+        - **Narrative Drive:** Structure the script like an unfolding mystery, a compelling argument being built piece by piece, or a journey to an 'aha!' moment. Ensure each segment logically and excitingly leads to the next.
+
+    - **Maintain Factual Integrity and Clarity:**
+        - Use simple to understand english for the understanding of someone who english is not thier first language. Do not use terms thats that need a dictionary to get its meaning, rather simpler word used in day to day conversation which still perfectly delivers the message. 
+        - Don't mention the transcript even if its the source from which you got this information explain. Stop mentioning the source.
+        - If its a news, report it as news not as a story clearly articulating what the news said
+        - Avoids repeating exact words from the transcript by using synonyms and expanding with related ideas or examples.
+        - Examine the content and determine whether it qualifies as news or should be categorized as opinion, analysis, or feature. Consider factors like timeliness, factual accuracy, and relevance in your judgment.
+        - As you generate the script, cross-check any factual claims, dates, figures, or reported events with your own knowledge and understanding. If the content appears outdated, inaccurate, or misleading, adjust it accordingly to ensure factual accuracy and clarity. Do not include unverifiable or misleading claims in the final script.
+        - If the video transcript, the author mentioned his or her name, focus only on the script and don't mention the persons name in the generated script.
+
+    The script should also adhere to these specific formatting and style points:
+    - Do not include asterisks (*) or emojis.
+    - Begin with one of your example hooks (e.g.,'Hey ...', or 'Stop scrolling ...', 'What if I told you...', 'Here is some breaking news...'), ensuring it aligns with the 'Electrifying Introduction' goal above.
+    - Flow seamlessly from one point to the next with transitional phrases. If the original script implies or contains numbered points, you can structure the generated script with numbering (e.g., first on our list, second, third...).
+    - **Conclude with Impact and a Compelling Call to Action:** End not just with an intriguing question, but with one that **challenges the viewer's perspective or ignites a desire for further exploration/discussion.** For the call to action, instead of a generic "subscribe," frame it uniquely. For example: "If you're ready to keep uncovering the [adjective, e.g., 'hidden truths', 'extraordinary insights'] behind [channel's general topic], make sure you join our community of curious minds by subscribing and hitting that notification bell – you won't want to miss what's next."
+    
+    Additionally, generate:
+    - A **new video title** that is catchy, informative, and optimized for YouTube.
+    - A list of **keywords** relevant to the video's topic to enhance SEO and discoverability.
+
+    Here's the provided transcript:
+
+    {transcript}
+
+    Please return the output as a JSON object in the following format:
+    {{
+        "new_video_title": "Your catchy video title",
+        "keywords": ["keyword1", "keyword2", "keyword3"],
+        "script": "\\n- Introductory hook to grab attention...\\n- Leading phrase and first key point...\\n- Transitional phrase and second key point...\\n- Concluding thought and intriguing question."
+    }}
+    """
+
+    model = genai.GenerativeModel("gemini-2.0-flash")
+    response = model.generate_content(prompt)
+
+    # Log the raw response for debugging
+    #print("Raw API Response:", response.text)
+
+    # Get the content from the response
+    content = response.text
+
+    # Extract JSON from the content using regex
+    json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+
+    if json_match:
+        # If we find JSON in backticks, extract it
+        json_str = json_match.group(1)
+    else:
+        # Otherwise, attempt to use the content directly
+        json_str = content.strip()
+
+    try:
+        # Try to load the content as JSON
+        result = json.loads(json_str)
+
+        # Validate JSON structure
+        if validate_json_structure(result, expected_schema):
+            new_video_title = result["new_video_title"]
+            script = result["script"]
+            # Remove asterisks (*) from the script
+            # Remove asterisks (*) from the script
+            script = script.replace("*", "")
+
+            # Optional: Log for debugging
+           # print(f"Filtered Script:\n{script}")
+            return new_video_title, script
+        else:
+            raise ValueError("JSON validation failed.")
+
+    except json.JSONDecodeError as e:
+        print(f"JSON decoding error: {e}")
+        # Retry logic or fallback approach can be added here
+    return None, None  # In case of failure
+
+def download_youtube_video(youtube_link, output_path="/content"):
+    # Define an output template with a shorter filename
+    output_template = os.path.join(output_path, "%(title).50s-%(id)s.%(ext)s")
+    
+    # Build the yt-dlp command as a list of arguments
+    command = [
+        "yt-dlp",
+        youtube_link,
+        "-o", output_template,
+        "--restrict-filenames",  # Avoid problematic characters
+        "--max-filesize", "200G"   # Optional: limit file size to 2GB
+    ]
+
+    # Run the command and capture its output
+    result = subprocess.run(command, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print("Error during yt-dlp execution:", result.stderr)
+        return None
+
+    # After download, try to locate the downloaded file
+    try:
+        files = [os.path.join(output_path, f) for f in os.listdir(output_path) if os.path.isfile(os.path.join(output_path, f))]
+        if not files:
+            print("No files found in the output directory.")
+            return None
+        latest_file = max(files, key=os.path.getctime)
+        return latest_file
+    except Exception as e:
+        print("Error retrieving the downloaded file:", e)
+        return None
+
+
+def generate_transcript_with_retries(model, myfile, prompt, retries=10, delay=10):
+    for attempt in range(1, retries+1):
+        try:
+            result = model.generate_content([myfile, prompt])
+            return result
+        except Exception as e:
+            print(f"Attempt {attempt} failed: {e}")
+            if attempt < retries:
+                print(f"Retrying in {delay} seconds...")
+                time.sleep(delay)
+            else:
+                raise
+
+
+def extract_transcript_segments_image_vid(transcript, segment_duration=11, min_last_segment=5):
+    """
+    Extracts segments of a given duration from the transcript.
+    Returns a list of segments with start, end, duration, and text, and saves them to a JSON file.
+    The start of each segment (except the first) is the end of the previous segment.
+    If a segment (except the last) is less than segment_duration, it's merged with the next segment.
+    If the last segment is less than min_last_segment seconds, it's attached to the previous segment.
+
+    Args:
+        transcript (list): List of dictionaries containing 'start', 'end', and 'text'.
+        segment_duration (int): Target duration of each segment in seconds (default is 9 seconds).
+        min_last_segment (int): Minimum duration of the last segment in seconds (default is 6 seconds).
+
+    Returns:
+        list: A list of dictionaries containing 'start', 'end', 'duration', and 'text' for each segment.
+    """
+    segments = []
+    current_start = 0.0
+    current_text = ""
+    next_start = None  # to hold the start time of the next segment
+
+    i = 0
+    while i < len(transcript):
+        entry = transcript[i]
+        end = entry['end']
+        text = entry['text']
+
+        # Check if adding this entry exceeds the segment duration
+        if end - current_start > segment_duration:
+            # Check if current segment duration is less than segment_duration (except for the first segment)
+            if len(segments) > 0 and end - segments[-1]['start'] < segment_duration:
+                # Merge with the next segment
+                if i + 1 < len(transcript):
+                    next_entry = transcript[i + 1]
+                    next_end = next_entry['end']
+                    next_text = next_entry['text']
+
+                    segments[-1]['end'] = next_end
+                    segments[-1]['duration'] = round(next_end - segments[-1]['start'], 2)
+                    segments[-1]['text'] += " " + text + " " + next_text
+                    i += 2
+                else:
+                    segments.append({
+                        "start": current_start,
+                        "end": end,
+                        "duration": round(end - current_start, 2),
+                        "text": current_text.strip()
+                    })
+                    current_start = end
+                    current_text = ""
+                    i += 1
+            else:
+                # Create a new segment
+                duration = end - current_start
+                segments.append({
+                    "start": current_start,
+                    "end": end,
+                    "duration": round(duration, 2),
+                    "text": current_text.strip()
+                })
+                # Start a new segment
+                current_start = end
+                current_text = text
+                i += 1
+
+        else:
+            # Append text to the current segment
+            current_text += " " + text
+            i += 1
+
+    # Handle the last segment
+    if current_text:
+        duration = transcript[-1]['end'] - current_start
+        if duration < min_last_segment and len(segments) > 0:
+            # Attach to the previous segment if it's too short
+            prev_segment = segments[-1]
+            prev_segment['end'] = transcript[-1]['end']
+            prev_segment['duration'] = round(prev_segment['end'] - prev_segment['start'], 2)
+            prev_segment['text'] += " " + current_text.strip()
+        else:
+            segments.append({
+                "start": current_start,
+                "end": transcript[-1]['end'],
+                "duration": round(duration, 2),
+                "text": current_text.strip()
+            })
+
+    return segments
+
+def parse_transcript_file(file_path):
+    """
+    Parses the transcript file and returns a list of dictionaries.
+    """
+    transcript = []
+    with open(file_path, 'r') as f:
+        lines = f.readlines()
+
+    for line in lines:
+        parts = line.strip().split('  ', 1)
+        if len(parts) == 2:
+            time_range, text_data = parts
+            start_time, end_time = map(float, time_range.split())
+            
+            # Extract the text part, removing JSON if present
+            text = text_data.split('[', 1)[0].strip()
+            
+            transcript.append({
+                "start": start_time,
+                "end": end_time,
+                "text": text
+            })
+    return transcript
+
+# Your existing code...
+expected_schema2 = {
+    "type": "object",
+    "properties": {
+        "image_prompt": {"type": "string"},
+        "negative_prompt": {"type": "string"},
+        "theme_keywords": {"type": "array", "items": {"type": "string"}}
+    },
+    "required": ["image_prompt", "negative_prompt", "theme_keywords"]
+}
+
+def generate_image_prompts_batch(segment_batch, full_transcript):
+    """
+    Generates image prompts for a batch of segments using the full transcript as context.
+    
+    Args:
+    segment_batch (list): A list of segment dictionaries, each containing 'duration' and 'text'.
+    full_transcript (str): The full transcript text for context.
+
+    Returns:
+    list: A list of dictionaries containing generated prompts for each segment.
+    """
+    prompt = f"""You are an imaginative prompt generator for AI-based image systems like DALL-E, MidJourney, and Stable Diffusion.
+Analyze the provided full transcript and segment details to creatively craft for each segment:
+
+- A **dramatically compelling and uniquely conceptualized positive prompt** for generating an AI image that is instantly memorable and thought-provoking, directly relevant to the segment's core message. The image should aim for an unexpected yet fitting visual metaphor or an intensified, captivating representation of the scene/concept. Incorporate:
+  - **Intense and Evocative Visuals:** Focus on unusual perspectives, dynamic compositions, symbolic elements, and a heightened sense of atmosphere or emotion. Think beyond the literal to create something that sparks curiosity.
+  - **Striking Lighting & Textures:** Employ dramatic lighting (e.g., chiaroscuro, strong rim lighting, ethereal glows, moody silhouettes) and emphasize tactile or visually rich textures that add depth and intrigue.
+  - **Cinematic or Artistic Flair:** Lean into styles that enhance drama – epic cinematic framing, surrealism (if appropriate to the context), painterly aesthetics with bold strokes, or hyperrealism focused on an unusual detail. Specify professional camera (e.g., Canon EOS R5, Hasselblad X2D) and lens choices that would achieve a unique or high-impact look when relevant.
+  - **Anatomical and Textual Integrity:** Crucially, ensure any depicted human figures have well-formed faces, anatomically accurate fingers (ideally minimized or naturally obscured if not central to the concept), natural toe positioning, and properly proportioned body parts. Any text included should be short, simple, correctly spelled, and perfectly integrated without distortion.
+  - **Sensory & Environmental Amplification:** Heighten sensory and environmental details to create an immersive and unforgettable scene. Examples (adapt to the segment's content):
+    - *Instead of just 'misty morning', consider: "An almost sentient, pearlescent mist coiling through stark silhouettes at dawn."*
+    - *Instead of 'rain-kissed reflections', consider: "Neon-drenched, fractured reflections in a rain-slicked alley, hinting at a story untold."*
+    - *Instead of 'dappled sunlight', consider: "Cathedral-like shafts of golden light piercing a dense, ancient canopy, illuminating a single, significant object."*
+    - *Consider elements like: swirling particles of an unusual nature (e.g., glowing embers, crystallized thoughts, time fragments), exaggerated weather phenomena (if non-graphic and contextually relevant), or a focus on a single, powerful symbolic color.*
+  - **Relevance is Key:** While aiming for the dramatic and unique, the core visual must strongly resonate with and clearly illustrate the provided segment text. Avoid gratuitous or shocking elements that detract from the message or could be considered graphic. The goal is to be *remarkably relevant*.
+
+- A **negative prompt** tailored for face adjustment and sharpening, excluding:
+  - Unnatural skin tones
+  - Facial distortions or warping
+  - Plastic-like textures
+  - Oversharpening artifacts
+  - Harsh blurring effects
+
+- A list of **theme keywords** derived from the segment to optimize content creation.
+
+Consider the duration of each segment when crafting the prompts, as this indicates how long the image will be displayed.
+
+Full Transcript Context:
+{full_transcript}
+
+Segments to process:
+{json.dumps(segment_batch, indent=2)}
+
+Return the output as a JSON array, with each item corresponding to a segment:
+[
+  {{
+    "duration": 12.18,
+    "text": "Segment text...",
+    "image_prompt": "A highly descriptive image prompt...",
+    "negative_prompt": "No facial distortions, oversharpening artifacts, or plastic-like skin textures.",
+    "theme_keywords": ["keyword1", "keyword2", "keyword3"]
+  }},
+  ...
+]
+"""
+    client = Groq(api_key="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")
+    chat_completion = client.chat.completions.create(
+        messages=[{"role": "user", "content": prompt}],
+        model="llama-3.3-70b-versatile",
+    )
+    response_text = chat_completion.choices[0].message.content
+
+    json_match = re.search(r'``````', response_text, re.DOTALL)
+    if json_match:
+        cleaned_response = json_match.group(1)
+    else:
+        json_match = re.search(r'(\[.*\])', response_text, re.DOTALL)
+        if json_match:
+            cleaned_response = json_match.group(1)
+        else:
+            cleaned_response = response_text
+
+    try:
+        return json.loads(cleaned_response)
+    except json.JSONDecodeError:
+        print(colored("Error: Unable to parse JSON from API response", "red"))
+        return []
+
+
+VIDEO_TRANSCRIPT_LOG = "/home/ubuntu/crewgooglegemini/video_transcript_log.txt"
+PROMPT_LOG_FILE = "/home/ubuntu/crewgooglegemini/prompt_log.txt"
+CURRENT_PROMPT_FILE = "/home/ubuntu/crewgooglegemini/current_prompt.json"
+
+def confirm_action(message):
+    response = input(colored(f"{message} (y/n): ", "cyan"))
+    return response.strip().lower() == 'y'
+
+print(colored("Step 1: Initialize the connection settings.", "cyan"))
+server_address = "54.80.78.81:8253"
+client_id = str(uuid.uuid4())
+
+print(colored(f"Server Address: {server_address}", "magenta"))
+print(colored(f"Generated Client ID: {client_id}", "magenta"))
+
+
+
+
+def get_image(filename, subfolder, folder_type):
+    data = {"filename": filename, "subfolder": subfolder, "type": folder_type}
+    url_values = urllib.parse.urlencode(data)
+
+    print(colored(f"Fetching image from the server: {server_address}/view", "cyan"))
+    with urllib.request.urlopen(f"http://{server_address}/view?{url_values}") as response:
+        return response.read()
+
+def get_history(prompt_id):
+    print(colored(f"Fetching history for prompt ID: {prompt_id}.", "cyan"))
+    with urllib.request.urlopen(f"http://{server_address}/history/{prompt_id}") as response:
+        return json.loads(response.read())
+
+
+def reconnect_websocket():
+    ws = websocket.WebSocket()
+    ws_url = f"ws://{server_address}/ws?clientId={client_id}"
+    print(colored(f"Reconnecting WebSocket to {ws_url}", "cyan"))
+    ws.connect(ws_url)
+    return ws
+
+def get_output_images(prompt_id):
+    output_images = {}
+    history = get_history(prompt_id)[prompt_id]
+    for node_id in history['outputs']:
+        node_output = history['outputs'][node_id]
+        if 'images' in node_output:
+            images_output = []
+            for image in node_output['images']:
+                print(colored(f"Downloading image: {image['filename']} from the server.", "yellow"))
+                image_data = get_image(image['filename'], image['subfolder'], image['type'])
+                images_output.append(image_data)
+            output_images[node_id] = images_output
+    return output_images
+#==================================================================
+#REVISED OF THE BELOW
+
+
+def generate_images(ws, prompt_id):
+    output_images = {}
+    last_reported_percentage = 0
+    timeout = 30
+
+    ws.settimeout(timeout)
+    while True:
+        try:
+            out = ws.recv()
+            if isinstance(out, str):
+                message = json.loads(out)
+                if message['type'] == 'progress':
+                    data = message['data']
+                    current_progress = data['value']
+                    max_progress = data['max']
+                    percentage = int((current_progress / max_progress) * 100)
+                    if percentage > last_reported_percentage:
+                        #print(colored(f"Progress: {percentage}% in node {data['node']}", "yellow"))
+                        last_reported_percentage = percentage
+                elif message['type'] == 'executing':
+                    data = message['data']
+                    if data['node'] is None and data['prompt_id'] == prompt_id:
+                        print(colored("Execution complete.", "green"))
+                        return get_output_images(prompt_id)
+        except WebSocketTimeoutException:
+            print(colored(f"No message received for {timeout} seconds. Checking connection...", "yellow"))
+            try:
+                ws.ping()
+            except:
+                ws = reconnect_websocket()
+
+    return output_images
+
+def process_and_generate_images():
+    output_dir = "/home/ubuntu/crewgooglegemini/0001comfy2/outputs"
+    os.makedirs(output_dir, exist_ok=True)
+
+    with open(CURRENT_PROMPT_FILE, "r", encoding="utf-8") as f:
+        prompt_data = json.load(f)
+
+    ws = websocket.WebSocket()
+    ws_url = f"ws://{server_address}/ws?clientId={client_id}"
+    print(colored(f"Establishing WebSocket connection to {ws_url}", "cyan"))
+    ws.connect(ws_url)
+
+    queued_prompts = []
+    for i, prompt in enumerate(prompt_data):
+        positive_prompt = prompt["image_prompt"]
+        negative_prompt = prompt["negative_prompt"]
+
+        print(colored(f"\nQueuing prompt {i+1}/{len(prompt_data)}", "cyan"))
+        #print(colored(f"Positive Prompt: {positive_prompt}", "yellow"))
+        #print(colored(f"Negative Prompt: {negative_prompt}", "yellow"))
+
+        workflow = load_workflow(positive_prompt, negative_prompt)
+        response = queue_prompt(workflow)
+        if response and 'prompt_id' in response:
+            queued_prompts.append((response['prompt_id'], positive_prompt, negative_prompt))
+        
+        time.sleep(1)  # 1 second interval between queueing prompts
+
+    print(colored("All prompts queued. Processing...", "green"))
+
+    for i, (prompt_id, positive_prompt, negative_prompt) in enumerate(queued_prompts):
+        print(colored(f"\nProcessing prompt {i+1}/{len(queued_prompts)}", "cyan"))
+        images = generate_images(ws, prompt_id)
+
+        print(colored("Saving the generated images locally.", "cyan"))
+        for node_id, image_list in images.items():
+            for j, image_data in enumerate(image_list):
+                try:
+                    image = Image.open(io.BytesIO(image_data))
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = os.path.join(output_dir, f"{timestamp}_{node_id}_{i}_{j}.png")
+                    image.save(filename)
+                    print(colored(f"Image saved as {filename}", "blue"))
+                except Exception as e:
+                    print(colored(f"Error processing image: {e}", "red"))
+
+        log_entry = {
+            "positive_prompt": positive_prompt,
+            "negative_prompt": negative_prompt,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        with open(PROMPT_LOG_FILE, "a", encoding="utf-8") as log_file:
+            log_file.write(json.dumps(log_entry, indent=4) + "\n\n")
+
+        print(colored("Prompt and vid transcript logged successfully.", "green"))
+
+    ws.close()
+    print(colored("All prompts processed and images generated.", "green"))
+
+def load_workflow(positive_prompt, negative_prompt):
+    with open("/home/ubuntu/crewgooglegemini/0001comfy2/workflow003(API).json", "r", encoding="utf-8") as f:
+        workflow = json.load(f)
+    workflow["4"]["inputs"]["text"] = positive_prompt
+    workflow["5"]["inputs"]["text"] = negative_prompt
+    return workflow
+
+def queue_prompt(workflow):
+    p = {"prompt": workflow, "client_id": client_id}
+    data = json.dumps(p, indent=4).encode("utf-8")
+    req = urllib.request.Request(f"http://{server_address}/prompt", data=data)
+
+    print(colored(f"Queuing the prompt for client ID {client_id}.", "cyan"))
+
+    try:
+        response = json.loads(urllib.request.urlopen(req).read())
+        return response
+    except Exception as e:
+        print(colored(f"Error sending prompt: {e}", "red"))
+        return {}
+
+#=========================================================
+
+
+# --- New Function: Process Directory Photos with Moving ---
+def process_directory_photos(input_dir, output_dir, durations):
+    """
+    Processes photos from a given directory and creates video clips with specified durations.
+    """
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    used_dir = os.path.join(input_dir, "used_images")
+    os.makedirs(used_dir, exist_ok=True)
+
+    input_files = sorted([f for f in os.listdir(input_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+    
+    for i, (input_file, duration) in enumerate(zip(input_files, durations)):
+        input_path = os.path.join(input_dir, input_file)
+        try:
+            img = Image.open(input_path)
+            img = img.convert('RGB')
+            print(f"Photo loaded successfully: {input_file}")
+        except Exception as e:
+            print(f"Error loading photo {input_file}: {e}")
+            continue
+
+        img_array = np.array(img)
+        clip = ImageClip(img_array).set_duration(duration)
+
+        clip = zoom(clip, 1.2)  # Apply zoom effect
+        #clip = clip.fx(vfx.colorx, 1.1)
+        clip = crop_video(clip)
+        clip = clip.resize(newsize=(1080, 1920))
+        #clip = clip.fx(vfx.colorx, 1.2)
+        clip = clip.without_audio()
+
+        output_path = os.path.join(output_dir, f'clip_{i+1}.mp4')
+        clip.write_videofile(output_path, fps=30, codec='libx264', bitrate="30000k", threads=10)
+        print(f"Clip saved as: {output_path}")
+
+        # Move the processed photo to the used_images folder
+        dest_path = os.path.join(used_dir, input_file)
+        shutil.move(input_path, dest_path)
+        print(f"Moved {input_file} to used_images.")
+
+    print("All directory photos processed into individual video clips.")
+
+def step_5e_generate_video_clips():
+    image_input_directory = "/home/ubuntu/crewgooglegemini/0001comfy2/outputs"
+    video_output_directory = "/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/WellnessGram"
+    json_file = "/home/ubuntu/crewgooglegemini/001videototxt/transcripts/image_video.json"
+
+    # Load durations from JSON file
+    with open(json_file, 'r') as f:
+        data = json.load(f)
+    durations = [item['duration'] for item in data]
+
+    # Process photos and create video clips
+    process_directory_photos(image_input_directory, video_output_directory, durations)
+
+
+def zoom(clip, zoom_factor):
+    def make_frame(get_frame, t):
+        img = get_frame(t)
+        center_x, center_y = img.shape[1] / 2, img.shape[0] / 2
+        scale = 1 + (zoom_factor - 1) * t / clip.duration
+        new_size = (max(1, int(img.shape[1] * scale)), max(1, int(img.shape[0] * scale)))
+        zoomed = np.array(Image.fromarray(img).resize(new_size, Image.LANCZOS))
+
+        x1 = max(0, int(center_x - img.shape[1] / 2))
+        y1 = max(0, int(center_y - img.shape[0] / 2))
+
+        x2 = min(zoomed.shape[1], x1 + img.shape[1])
+        y2 = min(zoomed.shape[0], y1 + img.shape[0])
+
+        return zoomed[y1:y2, x1:x2]
+
+    return clip.fl(lambda gf, t: make_frame(gf, t))
+
+
+def crop_video(clip):
+    VERTICAL_RATIO = 9 / 16  # Aspect ratio for YouTube Shorts
+
+    frame_width = clip.w
+    frame_height = clip.h
+
+    target_width = int(frame_height * VERTICAL_RATIO)
+
+    x_start = (frame_width - target_width) // 2
+
+    cropped_clip = clip.crop(x1=x_start, y1=0, width=target_width, height=frame_height)
+
+    return cropped_clip
+
+def log_transcript(transcript_text, new_video_title):
+    log_entry = {
+        "video_title": new_video_title,
+        "transcript": transcript_text,
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    with open(VIDEO_TRANSCRIPT_LOG, "a", encoding="utf-8") as log_file:
+        log_file.write(json.dumps(log_entry, indent=4) + "\n\n")
+
+
+
+
+def step_5f_send_to_telegram():
+    # Telegram Bot Configuration
+    BOT_TOKEN = '6157935666:AAESXcHywVwdHZqurjz0kCcVTjzCv50gjlQ'
+    CHAT_ID = '5034393732'
+
+    # Paths to the final video and transcript log
+    FINAL_VIDEO_DIR = '/home/ubuntu/crewgooglegemini/FINALVIDEOS/WellnessGram'
+    TRANSCRIPT_PATH = '/home/ubuntu/crewgooglegemini/video_transcript_log.txt'
+
+    # Find the most recent video file in the FINAL_VIDEO_DIR
+    if not os.path.exists(FINAL_VIDEO_DIR):
+        print(f"Error: Directory {FINAL_VIDEO_DIR} does not exist.")
+        return
+
+    video_files = [f for f in os.listdir(FINAL_VIDEO_DIR) if f.endswith(".mp4")]
+    if not video_files:
+        print("Error: No video files found in the final video directory.")
+        return
+
+    # Get the latest video file by modification time
+    latest_video_file = max(video_files, key=lambda f: os.path.getmtime(os.path.join(FINAL_VIDEO_DIR, f)))
+    video_path = os.path.join(FINAL_VIDEO_DIR, latest_video_file)
+
+    # Read the latest transcript from the log file
+    if not os.path.exists(TRANSCRIPT_PATH):
+        print(f"Error: Transcript log file {TRANSCRIPT_PATH} does not exist.")
+        return
+
+    transcripts = []
+    current_json = ""
+    with open(TRANSCRIPT_PATH, 'r') as f:
+        for line in f:
+            if line.strip() == "{":
+                current_json = "{"
+            elif line.strip() == "}":
+                current_json += "}"
+                try:
+                    transcript = json.loads(current_json)
+                    transcripts.append(transcript)
+                except json.JSONDecodeError:
+                    print(f"Skipping invalid JSON object: {current_json}")
+                current_json = ""
+            else:
+                current_json += line
+
+    if not transcripts:
+        print("No valid transcripts found in the log file.")
+        return
+
+    # Find the latest transcript by timestamp
+    latest_transcript = max(transcripts, key=lambda x: x['timestamp'])
+
+    # Use asyncio to run the async function
+    asyncio.run(send_telegram_message(BOT_TOKEN, CHAT_ID, video_path, latest_transcript))
+
+async def send_telegram_message(bot_token, chat_id, video_path, transcript):
+    try:
+        # Initialize Telegram Bot
+        bot = Bot(token=bot_token)
+
+        # Send the video to Telegram
+        with open(video_path, 'rb') as video:
+            await bot.send_video(chat_id=chat_id, video=video, caption=f"Video Title: {transcript['video_title']}")
+
+        # Send the transcript as a text message
+        transcript_text = (
+            f"Title: {transcript['video_title']}\n\n"
+            f"Transcript:\n{transcript['transcript']}"
+        )
+        await bot.send_message(chat_id=chat_id, text=transcript_text)
+
+        print("Video and transcript sent successfully to Telegram.")
+
+    except Exception as e:
+        print(f"An error occurred while sending to Telegram: {e}")
+
+
+# You can call this function in your main script just like your other functions
+# step_5f_send_to_telegram()
+
+
+def get_next_link():
+    new_links_file = "/home/ubuntu/crewgooglegemini/AUTO/Newlinks.txt"
+    
+    if not os.path.exists(new_links_file):
+        return None, None
+    
+    with open(new_links_file, 'r') as file:
+        lines = file.readlines()
+    
+    if not lines:
+        return None, None
+    
+    youtube_link = lines[0].strip()
+    return youtube_link, new_links_file
+
+
+
+def make_safe_filename(name):
+    # Replace any character that is not alphanumeric, a hyphen, or underscore with an underscore
+    return re.sub(r'[^A-Za-z0-9-_]', '_', name)
+
+
+# Global variable to track the current background sound index
+current_bg_sound_index = 0
+
+def get_background_sound(audio_duration: float) -> AudioFileClip:
+    """
+    Get a background sound clip that matches the duration of the main audio.
+
+    Parameters:
+        audio_duration (float): The duration of the main audio in seconds.
+
+    Returns:
+        AudioFileClip: A background sound clip adjusted to match the main audio duration.
+    """
+    global current_bg_sound_index
+
+    # Background sounds folder
+    bg_sounds_folder = "/home/ubuntu/crewgooglegemini/CAPTACITY/assets/bgsound"
+
+    # List all available background sound files in the folder
+    bg_sound_files = [
+        os.path.join(bg_sounds_folder, f)
+        for f in os.listdir(bg_sounds_folder)
+        if f.endswith(".mp3") or f.endswith(".wav")
+    ]
+
+    # Ensure there are background sounds available
+    if not bg_sound_files:
+        raise ValueError("No background sound files found in the specified folder.")
+
+    # Select the current background sound file
+    bg_sound_path = bg_sound_files[current_bg_sound_index]
+
+    # Update the index for cyclic behavior
+    current_bg_sound_index = (current_bg_sound_index + 1) % len(bg_sound_files)
+
+    # Load the background sound and adjust its volume
+    bg_sound = AudioFileClip(bg_sound_path).volumex(0.07)
+
+    # Adjust the background sound duration to match the main audio duration
+    if bg_sound.duration < audio_duration:
+        # Repeat the background sound to cover the entire duration
+        bg_sound_repeated = [bg_sound] * (int(audio_duration // bg_sound.duration) + 1)
+        bg_sound = concatenate_audioclips(bg_sound_repeated).subclip(0, audio_duration)
+        print("we repeated the audio to match video")
+    else:
+        # Trim the background sound to match the main audio duration
+        bg_sound = bg_sound.subclip(0, audio_duration)
+        print("we trimmed the audio to match video")
+
+    return bg_sound
+
+
+import requests
+from bs4 import BeautifulSoup
+from googleapiclient.discovery import build
+import os
+
+def get_imagesfromgoogleimg(query, num_images=2, api_key=None, cse_id=None):
+    """
+    Fetch images using Google Custom Search API or fallback to web scraping.
+
+    Parameters:
+        query (str): Search query for images.
+        num_images (int): Number of images to fetch.
+        api_key (str): Google Custom Search API key.
+        cse_id (str): Google Custom Search Engine ID.
+
+    Returns:
+        List[str]: URLs of fetched images.
+    """
+    def api_search():
+        """Fetch images using Google Custom Search API."""
+        service = build("customsearch", "v1", developerKey=api_key)
+        results = []
+        for i in range(0, num_images, 10):
+            try:
+                res = service.cse().list(q=query, cx=cse_id, searchType="image", num=min(10, num_images-i), start=i+1).execute()
+                results.extend(res.get('items', []))
+            except Exception as e:
+                print(f"API error: {e}")
+                return []
+        return [item['link'] for item in results[:num_images]]
+
+    def scrape_search():
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        url = f"https://www.google.com/search?q={query}&tbm=isch"
+        try:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            print(f"Request failed: {e}")
+            return []
+
+        soup = BeautifulSoup(response.content, 'html.parser')
+        img_tags = soup.find_all('img')
+        img_urls = []
+        for img in img_tags[1:num_images+1]:
+            if 'src' in img.attrs:
+                img_url = img['src']
+                if not img_url.startswith(('http://', 'https://')):
+                    img_url = 'https:' + img_url
+                img_urls.append(img_url)
+        return img_urls
+
+
+    try:
+        if api_key and cse_id:
+            image_urls = api_search()
+            if not image_urls:
+                raise Exception("API search returned no results.")
+            print("Fetched images using Google Custom Search API.")
+        else:
+            raise Exception("API method not available")
+    except Exception as e:
+        print(f"API search failed: {e}. Falling back to scraping method.")
+        image_urls = scrape_search()
+
+    if not image_urls:
+        print("No images found using either method.")
+        return []
+
+    save_dir = "images/"
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+    for i, url in enumerate(image_urls):
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+            with open(os.path.join(save_dir, f"{query.replace(' ', '_')}_{i+1}.jpg"), "wb") as f:
+                f.write(response.content)
+            print(f"Downloaded image_{i+1}.jpg")
+        except Exception as e:
+            print(f"Failed to download image {i+1}: {e}")
+
+    return image_urls[:num_images]
+
+# # Usage
+# api_key = "AIzaSyB7k6iP9BHggSHu49C0CChJsEVRwSyXdPs"
+# cse_id = "a3465348ee4ca470a"
+# query = "plane crash at denver usa march 2025 today"
+# images = get_imagesfromgoogleimg(query, num_images=2, api_key=api_key, cse_id=cse_id)
+# print("Fetched image URLs:", images)
+
+async def process_generated_content(new_video_title, script, base_output_dir_name, process_option_type):
+    """
+    Processes generated content to create a final video with voiceover, captions, and images/stock videos.
+    """
+    print(f"Starting process_generated_content for: {new_video_title} (Option: {process_option_type})")
+
+    # 1. Path Setup
+    VOICE_OVER_FOLDER = "/home/ubuntu/crewgooglegemini/001videototxt/voice_over"
+    TRANSCRIPT_FOLDER = "/home/ubuntu/crewgooglegemini/001videototxt/transcripts"
+    IMAGE_PROMPT_OUTPUT_FILE = '/home/ubuntu/crewgooglegemini/current_prompt.json'
+    IMAGE_OUTPUT_DIR = "/home/ubuntu/crewgooglegemini/0001comfy2/outputs" # Base for Comfy outputs
+    VIDEO_CLIP_OUTPUT_DIR = f"/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/{base_output_dir_name}" # CUSTOM_FOLDER for image-generated clips
+    FINAL_VIDEO_DIR = f"/home/ubuntu/crewgooglegemini/FINALVIDEOS/{base_output_dir_name}"
+    STOCK_VIDEOS_DIR = "/home/ubuntu/crewgooglegemini/PIXABAY VIDEOS" # Fallback or primary for non-image based
+    FULL_SCRIPT_JSON_PATH = '/home/ubuntu/crewgooglegemini/001videototxt/output_transcript.json' # To store the script
+
+    ensure_folder_exists(VOICE_OVER_FOLDER)
+    ensure_folder_exists(TRANSCRIPT_FOLDER)
+    ensure_folder_exists(IMAGE_OUTPUT_DIR)
+    ensure_folder_exists(VIDEO_CLIP_OUTPUT_DIR)
+    ensure_folder_exists(FINAL_VIDEO_DIR)
+    ensure_folder_exists(STOCK_VIDEOS_DIR)
+    # Parent directory for IMAGE_PROMPT_OUTPUT_FILE and FULL_SCRIPT_JSON_PATH should exist or be ensured by calling functions.
+    ensure_folder_exists(os.path.dirname(IMAGE_PROMPT_OUTPUT_FILE))
+    ensure_folder_exists(os.path.dirname(FULL_SCRIPT_JSON_PATH))
+
+    print("Paths configured and ensured.")
+
+    # 2. Log Transcript (Assumed to be done *before* this function is called if it's the original video transcript)
+    # If the `script` parameter itself needs to be logged as a "transcript", that would happen here.
+    # For now, following the prompt, `log_transcript` is called outside with the original transcript.
+
+    # 3. Audio Generation
+    audio_path = os.path.join(VOICE_OVER_FOLDER, "voiceover.wav")
+    print(f"Generating audio for script: '{script[:50]}...'")
+    await generate_audio(script, audio_path)
+    print(f"Audio generated and saved to {audio_path}")
+
+    # 4. Local Transcription for Captions
+    print("Transcribing audio locally for captions...")
+    transcription = transcribe_locally(audio_path)
+    transcript_filename = os.path.join(TRANSCRIPT_FOLDER, f"{os.path.basename(audio_path).replace('.wav', '')}_transcription.txt")
+    with open(transcript_filename, 'w') as f:
+        if isinstance(transcription, list):
+            for segment_data in transcription: # Ensure correct variable name if transcription format changes
+                words_json = json.dumps(segment_data.get('words', []), default=lambda x: float(x) if isinstance(x, np.float64) else x)
+                f.write(f"{segment_data.get('start', 0.0)} {segment_data.get('end', 0.0)} {segment_data.get('text', '')} {words_json}\n")
+        else:
+            f.write(str(transcription)) # Fallback if not list
+    print(f"Local transcription saved to {transcript_filename}")
+    video_segments_for_captions = extract_transcript_segments(transcription) # This returns a tuple (segments, durations)
+    # If only segments are needed:
+    # video_segments_for_captions, _ = extract_transcript_segments(transcription)
+    # Based on current usage of add_captions, it needs the 'segments' part of the tuple.
+    # The function `extract_transcript_segments` in the notebook returns `segments,` (a tuple with one element).
+    # So, we might need to adjust how we get the actual list of segments.
+    # Assuming `extract_transcript_segments` is adjusted to return just the segments list or we take the first element.
+    if isinstance(video_segments_for_captions, tuple):
+        video_segments_for_captions = video_segments_for_captions[0] 
+    print(f"Extracted {len(video_segments_for_captions)} segments for captions.")
+
+
+    # 5. Image-Video Segments & Prompts
+    print("Parsing transcript for image-video segments...")
+    parsed_transcript_for_images = parse_transcript_file(transcript_filename)
+    segments_for_image_video = extract_transcript_segments_image_vid(parsed_transcript_for_images)
+    image_video_json_path = os.path.join(TRANSCRIPT_FOLDER, 'image_video.json')
+    with open(image_video_json_path, 'w') as f:
+        json.dump(segments_for_image_video, f, indent=4)
+    print(f"Image-video segments saved to {image_video_json_path}")
+
+    print(f"Saving full script to {FULL_SCRIPT_JSON_PATH} for prompt generation context...")
+    with open(FULL_SCRIPT_JSON_PATH, 'w') as f:
+        json.dump({"script": script}, f) # Save the passed script here
+
+    image_prompts = []
+    batch_size = 5 # As used in the main loop
+    full_script_for_prompts = script # Use the passed script as context
+    print(f"Generating image prompts in batches (size {batch_size})...")
+    for i in range(0, len(segments_for_image_video), batch_size):
+        batch = segments_for_image_video[i:i+batch_size]
+        # generate_image_prompts_batch expects `full_transcript` as the second argument.
+        batch_prompts = generate_image_prompts_batch(batch, full_script_for_prompts)
+        image_prompts.extend(batch_prompts)
+    with open(IMAGE_PROMPT_OUTPUT_FILE, 'w') as f:
+        json.dump(image_prompts, f, indent=4)
+    print(f"Generated {len(image_prompts)} image prompts and saved to {IMAGE_PROMPT_OUTPUT_FILE}")
+
+    # 6. Image Generation
+    print("Starting image generation process...")
+    process_and_generate_images() # Reads from IMAGE_PROMPT_OUTPUT_FILE, saves to IMAGE_OUTPUT_DIR
+    print("Image generation process completed.")
+
+    # 7. Video Clips from Images
+    print("Processing generated images into video clips...")
+    # Load durations from image_video_json_path (segments_for_image_video)
+    durations_for_image_clips = [item['duration'] for item in segments_for_image_video]
+    process_directory_photos(IMAGE_OUTPUT_DIR, VIDEO_CLIP_OUTPUT_DIR, durations_for_image_clips)
+    print(f"Video clips from images saved to {VIDEO_CLIP_OUTPUT_DIR}")
+
+    # 8. Background/Stock Video Sourcing
+    # `search_and_download_best_videos` uses `custom_folder` to prioritize clips from there.
+    # `VIDEO_CLIP_OUTPUT_DIR` (where image-based clips were just saved) is that custom_folder.
+    # `STOCK_VIDEOS_DIR` is the fallback/additional source.
+    print("Sourcing background/stock videos. Prioritizing image-generated clips.")
+    downloaded_videos, video_titles, durations_stock = search_and_download_best_videos(
+        download_dir=STOCK_VIDEOS_DIR, # This is where Pixabay videos would be downloaded if logic was still active
+        custom_folder=VIDEO_CLIP_OUTPUT_DIR, # This is where our image-generated clips are
+        use_pexels=False # Assuming Pexels is not used based on current main loop
+    )
+    print(f"Found/sourced {len(downloaded_videos)} video clips for assembly.")
+
+    # 9. Video Assembly
+    print("Assembling final video...")
+    final_video_clips_list = []
+    # The `durations_stock` from `search_and_download_best_videos` corresponds to `downloaded_videos`.
+    # These are the clips found in `VIDEO_CLIP_OUTPUT_DIR`.
+    for video_path, duration in zip(downloaded_videos, durations_stock):
+        try:
+            clip = VideoFileClip(video_path)
+            if clip.duration > 0:
+                # Resize video, ensuring duration matches the segment it's supposed to cover
+                resized_clip = resize_video(clip, 1080, 1920, duration=duration)
+                
+                # Handle cases where resize_video might alter duration slightly, or if original clip was shorter
+                if resized_clip.duration < duration:
+                    # If clip is shorter than desired duration, loop/extend (simple loop for now)
+                    # A more sophisticated method might be needed if perfect looping is required or if it's significantly shorter
+                    loop_count = int(duration // resized_clip.duration) + 1
+                    extended_clip_parts = [resized_clip] * loop_count
+                    extended_clip = concatenate_videoclips(extended_clip_parts, method="compose")
+                    final_segment_clip = extended_clip.subclip(0, duration)
+                elif resized_clip.duration > duration:
+                    final_segment_clip = resized_clip.subclip(0, duration)
+                else:
+                    final_segment_clip = resized_clip
+
+                final_video_clips_list.append(final_segment_clip)
+            else:
+                print(f"Warning: Skipping empty or invalid clip {video_path}")
+        except Exception as e:
+            print(f"Error processing clip {video_path}: {e}. Skipping.")
+
+
+    if not final_video_clips_list:
+        raise ValueError("No valid video clips available for concatenation after processing.")
+    
+    final_video_assembly = concatenate_videoclips(final_video_clips_list, method="compose")
+
+    main_audio = AudioFileClip(audio_path)
+    
+    # Adjust final video assembly duration to match main audio
+    if final_video_assembly.duration > main_audio.duration:
+        print(f"Video assembly ({final_video_assembly.duration}s) is longer than audio ({main_audio.duration}s). Trimming video.")
+        final_video_assembly = final_video_assembly.subclip(0, main_audio.duration)
+    elif final_video_assembly.duration < main_audio.duration:
+        print(f"Video assembly ({final_video_assembly.duration}s) is shorter than audio ({main_audio.duration}s). Extending video.")
+        # This logic is similar to what's in the main loop: extend with the last clip
+        if final_video_clips_list: # Check if there are any clips
+            last_clip_for_extension = final_video_clips_list[-1]
+            # Ensure last_clip_for_extension has a positive duration to avoid issues
+            if last_clip_for_extension.duration > 0:
+                difference = main_audio.duration - final_video_assembly.duration
+                loops_needed = int(difference // last_clip_for_extension.duration) + 1
+                
+                extension_clips = []
+                current_extension_duration = 0
+                for _ in range(loops_needed):
+                    if current_extension_duration < difference:
+                        extension_clips.append(last_clip_for_extension)
+                        current_extension_duration += last_clip_for_extension.duration
+                    else:
+                        break
+                
+                if extension_clips: # Only concatenate if there are clips to add
+                    full_extension_clip = concatenate_videoclips(extension_clips, method="compose")
+                    needed_extension_clip = full_extension_clip.subclip(0, difference)
+                    final_video_assembly = concatenate_videoclips([final_video_assembly, needed_extension_clip], method="compose")
+            else: # Fallback: if last clip has no duration, cannot extend this way
+                print("Warning: Cannot extend video with last clip as it has zero duration. Audio might be cut short.")
+                final_video_assembly = final_video_assembly.set_duration(main_audio.duration) # Force set, might look abrupt
+        else: # No clips to begin with, create a black clip? This case should ideally be handled earlier.
+             print("Warning: No video clips were processed. Final video will be silent/problematic.")
+             # final_video_assembly might need to be a black screen of main_audio.duration if no clips were made
+             # For now, we assume final_video_clips_list was not empty.
+
+    bg_sound = get_background_sound(main_audio.duration)
+    combined_audio = CompositeAudioClip([main_audio, bg_sound])
+    final_video_assembly = final_video_assembly.set_audio(combined_audio)
+
+    fade_duration = 1 # seconds
+    final_video_assembly = final_video_assembly.fx(fadeout, duration=fade_duration)
+    final_audio_with_fade = final_video_assembly.audio.fx(audio_fadeout, duration=fade_duration)
+    final_video_assembly = final_video_assembly.set_audio(final_audio_with_fade)
+    print("Video assembly complete with audio and fades.")
+
+    # 10. Final Video Output & Captioning
+    safe_title = make_safe_filename(new_video_title)
+    intermediate_output_path = os.path.join(FINAL_VIDEO_DIR, f"{safe_title}_intermediate.mp4")
+    
+    print(f"Writing intermediate video to {intermediate_output_path}...")
+    final_video_assembly.write_videofile(
+        intermediate_output_path,
+        codec="libx264",
+        audio_codec="aac",
+        ffmpeg_params=['-pix_fmt', 'yuv420p', '-preset', 'medium', '-crf', '23', "-bufsize", "16M", "-maxrate", "8M", '-profile:v', 'high'],
+        threads=8,
+        #verbose=False, # Keep verbose for now, or make it conditional
+        logger="bar" # Progress bar
+    )
+    print("Intermediate video written.")
+
+    final_output_path_with_captions = os.path.join(FINAL_VIDEO_DIR, f"{safe_title}.mp4")
+    print(f"Adding captions. Outputting to {final_output_path_with_captions}...")
+    add_captions(
+        video_file=intermediate_output_path,
+        output_file=final_output_path_with_captions,
+        font="Bangers-Regular.ttf",
+        font_size=80,
+        font_color="yellow",
+        stroke_width=3,
+        stroke_color="black",
+        highlight_current_word=True,
+        word_highlight_color="red",
+        line_count=2,
+        padding=50, # Original padding from add_captions call
+        shadow_strength=1.0,
+        shadow_blur=0.1,
+        print_info=True,
+        segments=video_segments_for_captions # Pass the loaded video segments
+    )
+    print("Captions added.")
+
+    if os.path.exists(intermediate_output_path):
+        os.remove(intermediate_output_path)
+        print(f"Removed intermediate file: {intermediate_output_path}")
+
+    # Clean up .mp4 files in VIDEO_CLIP_OUTPUT_DIR (CUSTOM_FOLDER for image clips)
+    print(f"Cleaning up clips from {VIDEO_CLIP_OUTPUT_DIR}...")
+    if os.path.exists(VIDEO_CLIP_OUTPUT_DIR):
+        for file_item in os.listdir(VIDEO_CLIP_OUTPUT_DIR):
+            if file_item.endswith(".mp4"):
+                file_path_to_delete = os.path.join(VIDEO_CLIP_OUTPUT_DIR, file_item)
+                os.remove(file_path_to_delete)
+                # print(f"Removed clip: {file_path_to_delete}")
+        print(f"Cleaned up .mp4 files in {VIDEO_CLIP_OUTPUT_DIR}.")
+    
+    print(f"Final video with captions saved as {final_output_path_with_captions}")
+
+    # 11. Distribution
+    print("Starting distribution step (Telegram and Google Drive)...")
+    # Note: These functions might need adjustment if they rely on global state not available here,
+    # or if they need specific paths passed (currently they find latest files in fixed dirs).
+    # For FINAL_VIDEO_DIR, it's now dynamic. We might need to update step_5f and step_5g or pass FINAL_VIDEO_DIR to them.
+    # For now, assuming they are robust enough or will be updated later.
+    # Let's modify them slightly to accept FINAL_VIDEO_DIR
+    
+    # Modified call for step_5f_send_to_telegram
+    # await send_telegram_message_dynamic(FINAL_VIDEO_DIR, new_video_title) # if we refactor send_telegram_message
+
+    # For now, using existing functions. They pick the latest file from a hardcoded path.
+    # If base_output_dir_name makes FINAL_VIDEO_DIR different from the one hardcoded in step_5f/g, this won't work.
+    # The current step_5f_send_to_telegram uses FINAL_VIDEO_DIR = '/home/ubuntu/crewgooglegemini/FINALVIDEOS/WellnessGram'
+    # This needs to be made dynamic if base_output_dir_name is not "WellnessGram".
+    
+    # Quick check for this specific case:
+    if base_output_dir_name == "WellnessGram":
+        step_5f_send_to_telegram() # Assumes this function finds the latest video in the correct FINAL_VIDEO_DIR
+        step_5g_upload_to_google_drive() # Same assumption
+    else:
+        print(f"Skipping Telegram and Google Drive distribution for {base_output_dir_name} as it's not 'WellnessGram'. Distribution functions might need updates for dynamic paths.")
+
+    print(f"Processing for {new_video_title} completed successfully.")
+
+
+def step_5g_upload_to_google_drive():
+    FINAL_VIDEO_DIR = '/home/ubuntu/crewgooglegemini/FINALVIDEOS/WellnessGram'
+    TRANSCRIPT_PATH = '/home/ubuntu/crewgooglegemini/video_transcript_log.txt'
+
+
+
+def step_5g_upload_to_google_drive():
+    FINAL_VIDEO_DIR = '/home/ubuntu/crewgooglegemini/FINALVIDEOS/WellnessGram'
+    TRANSCRIPT_PATH = '/home/ubuntu/crewgooglegemini/video_transcript_log.txt'
+
+    # Find latest video
+    video_files = [f for f in os.listdir(FINAL_VIDEO_DIR) if f.endswith(".mp4")]
+    if not video_files:
+        print("No video files found.")
+        return
+    latest_video_file = max(video_files, key=lambda f: os.path.getmtime(os.path.join(FINAL_VIDEO_DIR, f)))
+    video_path = os.path.join(FINAL_VIDEO_DIR, latest_video_file)
+
+    # Load latest transcript from log
+    transcripts = []
+    current_json = ""
+    with open(TRANSCRIPT_PATH, 'r') as f:
+        for line in f:
+            if line.strip() == "{":
+                current_json = "{"
+            elif line.strip() == "}":
+                current_json += "}"
+                try:
+                    transcript = json.loads(current_json)
+                    transcripts.append(transcript)
+                except json.JSONDecodeError:
+                    pass
+                current_json = ""
+            else:
+                current_json += line
+
+    if not transcripts:
+        print("No valid transcripts found.")
+        return
+
+    latest_transcript = max(transcripts, key=lambda x: x['timestamp'])
+
+    # Create the transcript file as a .txt
+    transcript_filename = os.path.join(FINAL_VIDEO_DIR, f"{os.path.splitext(latest_video_file)[0]}_transcript.txt")
+    transcript_text = (
+        f"Title: {latest_transcript['video_title']}\n\n"
+        f"Transcript:\n{latest_transcript['transcript']}"
+    )
+    with open(transcript_filename, 'w') as tf:
+        tf.write(transcript_text)
+
+    # Upload video to Google Drive
+    video_upload_command = [
+        'rclone', 'copy', video_path, 'mygdrive:/YouTubevids/',
+        '--progress'
+    ]
+    subprocess.run(video_upload_command)
+    print(f"Uploaded video: {latest_video_file}")
+
+    # Upload transcript to Google Drive
+    transcript_upload_command = [
+        'rclone', 'copy', transcript_filename, 'mygdrive:/YouTubevids/',
+        '--progress'
+    ]
+    subprocess.run(transcript_upload_command)
+    print(f"Uploaded transcript: {transcript_filename}")
+
+    # # Optionally, clean up the local transcript file
+    # os.remove(transcript_filename)
+
+# Updated schema
+expected_schema = {
+    "type": "object",
+    "properties": {
+        "new_video_title": {"type": "string"},
+        "script": {"type": "string"},
+        "keywords": {"type": "array", "items": {"type": "string"}}
+    },
+    "required": ["new_video_title", "script", "keywords"]
+}
+
+def normalize_text(text):
+    return unidecode(text)
+
+def generate_biblical_script(biblical_focus):
+    prompt = f"""You are a distinguished biblical scholar and master communicator, tasked with creating exceptionally compelling YouTube scripts that illuminate the depths of the 66 canonical books of the Bible. Your goal is to make ancient truths resonate powerfully today, captivating both seasoned believers and curious seekers, encouraging deep reflection, and inspiring a desire to learn more. The scripts must be unique, unforgettable, and remarkably insightful.
+    
+    Your task is to take the provided biblical transcript, theme, or specific passage focus and transform it into an **extraordinary and spiritually invigorating YouTube script**. This script must not only be biblically sound and accurate but also structured to maximize viewer engagement, watch time, and a profound sense of discovery, and should be for a 20 to 30 seconds short(20 to 30 words).
+    
+    **Core Script Directives (Embodying Biblical Exegesis & Apologetics):**
+    
+    - **Craft a Revelation-Inducing Introduction:**
+        - Begin with a hook that instantly shatters preconceived notions or unveils a startling, overlooked truth related to the biblical focus. This could be a profound reinterpretation of a familiar verse, a challenging question that cuts to the heart of modern experience through an ancient lens, a historical fact that dramatically recontextualizes a biblical event, or an analogy that makes a complex theological point surprisingly clear and relevant.
+        - Aim for a "Wow, I've never thought of it that way before!" reaction that compels immediate attention. Examples: 'What if the most misunderstood verse in the Bible holds the key to [modern problem]?', 'The ancient secret hidden in [Genesis/Revelation/etc.] that scientists are only now beginning to grasp...', 'Forget what you *think* you know about [Biblical Figure/Event]; the original texts reveal something far more radical.'
+    
+    - **Unfold Truth as a Masterclass in Storytelling & Exegesis:**
+        - Use simple to understand english for the understanding of someone who english is not thier first language. Do not use terms thats that need a dictionary to get its meaning, rather simpler word used in day to day conversation which still perfectly delivers the message.
+        - Present the core message as an unfolding narrative or a meticulously constructed argument, drawing the viewer deeper with each point.
+        - **Scriptural Integrity:** Ground all arguments and insights firmly within the 66 canonical books of the Bible. Quote scriptures precisely (specify a preferred translation if you have one, e.g., NIV, ESV, KJV, or allow the LLM to choose a common one if not specified, but ensure consistency).
+        - **Original Language Insights:** Where pivotal for understanding, incorporate the nuanced meanings of key Hebrew, Aramaic, or Greek words, explaining their significance clearly and concisely to enrich the exegesis. For example, "The Hebrew word 'hesed' here, often translated as 'loving-kindness,' carries a much deeper covenantal weight, implying..."
+        - **Historical & Geographical Context:** Connect biblical events and teachings to their verified historical and geographical settings. If relevant, draw parallels or contrasts between ancient landscapes/cities (e.g., Jerusalem, Babylon) and their present-day locations or archaeological findings, making the Bible "come alive."
+        - **Dynamic & Persuasive Delivery:** Use vibrant, respectful, yet authoritative language. The tone should be that of a passionate, knowledgeable guide leading an exciting exploration, not a dry academic lecture. Employ rhetorical questions, vivid imagery drawn from the text, and compelling logic.
+        - **Homiletic Flow & Apologetic Strength:** Structure arguments clearly (sound hermeneutics leading to sound homiletics). Where the topic touches on areas requiring defense or clarification (apologetics), present well-reasoned, scripture-backed insights that are both intellectually satisfying and spiritually encouraging. Address potential doubts or modern skepticism with wisdom and clarity.
+    
+    - **Engineer Spiritual Engagement:**
+        - **Unearth Hidden Gems:** Focus on revealing connections, typologies, or prophetic fulfillments within the Bible that are often overlooked but profoundly illuminating.
+        - **Challenge and Inspire:** Present biblical truths in a way that challenges complacency and inspires genuine spiritual reflection and transformation, without being judgmental or preachy.
+        - **Bridge Ancient Wisdom to Modern Life:** Make explicit connections between the biblical message and contemporary challenges, aspirations, and ethical dilemmas, demonstrating the Bible's timeless relevance.
+        - **Create "Aha!" Moments:** Structure the script to lead viewers to powerful moments of understanding and personal insight.
+    
+    - **Maintain Reverence and Accuracy:**
+        - While aiming for remarkability, ensure all content is presented with reverence for the subject matter and maintains theological and historical accuracy based on established, orthodox interpretations (or clearly state if presenting a specific theological viewpoint if the input topic leans that way).
+        - Avoid speculation presented as fact. Clearly differentiate between direct scriptural teaching, historical context, and interpretive insights.
+    
+    **Script Formatting and Style:**
+        - Do not include asterisks (*) or emojis.
+        - Begin with a hook as described in the "Revelation-Inducing Introduction."
+        - Ensure a seamless, logical flow, using transitional phrases. If the topic lends itself to a numbered or thematic breakdown (e.g., "Three reasons why...", "The seven aspects of..."), structure it accordingly.
+        - **Conclude with a Profound Takeaway and Unique Call to Action:** End with a powerful summary statement, a lingering question that encourages deep personal reflection on the biblical truths presented, or a call to apply the message. For the YouTube call to action: "If this exploration has deepened your understanding or sparked a new hunger for biblical truth, join our journey by subscribing. We're committed to uncovering the life-changing power of God's Word, one revelation at a time. Don't miss out."
+    
+    Additionally, generate:
+    - A **new video title** that is both intriguing ( style – e.g., "The Old Testament Secret That Unlocks True Happiness," "They Don't Want You To Know This About The Apostle Paul") and accurately reflects the core biblical topic, optimized for YouTube search.
+    - A list of **keywords** relevant to the video's specific biblical topic, including theological terms, book names, key figures, and related themes for SEO.
+    
+    Here's the provided biblical topic, theme, or passage focus:
+    {{{biblical_focus}}}
+    
+    Please return the output as a JSON object in the following format:
+    {{
+        "new_video_title": "Your catchy and biblically relevant video title",
+        "keywords": ["keyword1_bible", "keyword2_theology", "keyword3_topic"],
+        "script": "The generated script"
+    }}
+    """
+
+    model = genai.GenerativeModel("gemini-2.0-flash")
+    response = model.generate_content(prompt)
+
+    # Log the raw response for debugging
+    # Log the raw response for debugging
+    print("Raw API Response:", response.text)
+
+    # Get the content from the response
+    content = response.text
+
+    # Extract JSON from the content using regex
+    json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+
+    if json_match:
+        json_str = json_match.group(1)
+    else:
+        json_str = content.strip()
+
+    # Clean up control characters if needed
+    #json_str = clean_json_string(json_str)  # (use your cleaning function here if needed)
+
+    try:
+        result = json.loads(json_str)
+
+        # Validate JSON structure
+        if validate_json_structure(result, expected_schema):
+            new_video_title = result["new_video_title"]
+            script = result["script"]
+
+            # Normalize the script using your function
+            script = normalize_text(script)
+            # Remove asterisks (*) from the script if you wish
+            script = script.replace("*", "")
+            script = re.sub(r'\([^)]*\)', '', script)
+            # Optional: Log for debugging
+            # print(f"Filtered Script:\n{script}")
+            return new_video_title, script
+        else:
+            raise ValueError("JSON validation failed.")
+
+    except json.JSONDecodeError as e:
+        print(f"JSON decoding error: {e}")
+        # Retry logic or fallback approach can be added here
+    return None, None  # In case of failure
+
+def get_first_json_string_and_update_file(json_file_path):
+    """
+    Reads a JSON file containing a list of strings.
+    Returns the first string, removes it from the list, and updates the file.
+    If the file doesn't exist, is empty, not a list, or any error occurs, returns None.
+    """
+    try:
+        with open(json_file_path, 'r', encoding='utf-8') as f:
+            try:
+                data = json.load(f)
+            except json.JSONDecodeError:
+                print(f"Error: Could not decode JSON from {json_file_path}. File might be empty or malformed.")
+                # To prevent repeated errors with a malformed file, overwrite with an empty list.
+                # Alternatively, could move/rename the malformed file.
+                with open(json_file_path, 'w', encoding='utf-8') as wf:
+                    json.dump([], wf, indent=4)
+                return None
+
+        if not isinstance(data, list):
+            print(f"Error: JSON content in {json_file_path} is not a list.")
+            # Overwrite with an empty list to correct the structure for future runs.
+            with open(json_file_path, 'w', encoding='utf-8') as wf:
+                json.dump([], wf, indent=4)
+            return None
+
+        if not data: # Empty list
+            # print(f"JSON list in {json_file_path} is empty. No items to process.") # This can be noisy if checked often
+            return None
+
+        item_to_process = data.pop(0) # Get and remove the first item
+
+        # Write the rest of the list back (even if it's now empty)
+        with open(json_file_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4) 
+
+        if isinstance(item_to_process, str):
+            return item_to_process.strip() # Ensure leading/trailing whitespace is removed
+        else:
+            print(f"Warning: Item popped from {json_file_path} was not a string: {item_to_process}")
+            return None # Or handle non-string items differently if needed
+
+    except FileNotFoundError:
+        # This case is handled by Option 4 logic by creating the file, 
+        # but good to have for robustness if called elsewhere.
+        print(f"JSON file {json_file_path} not found. No items to process.")
+        return None
+    except Exception as e:
+        print(f"An unexpected error occurred in get_first_json_string_and_update_file for {json_file_path}: {e}")
+        return None
+
+# get_latest_txt_file function removed as it's no longer needed.
+
+# ---------------------------------------------------------------------------
+# MAIN OPERATIONAL FUNCTION
+# ---------------------------------------------------------------------------
+async def main():
+    first_run = True
+    while True:
+        if first_run:
+            print("Choose an option:")
+            print("1: Upload a video/audio file")
+            print("2: Provide a YouTube link to download a video")
+            print("3: Process next link from Newlinks directory")
+            print("4: Bible Stories")
+            option = input("Enter 1, 2, 3, or 4: ").strip()
+            first_run = False
+        else:
+            option = "3"  # Automatically process next link
+
+        if option == "1":
+            # Note: This block assumes you're running in an environment like Colab.
+            # Replace 'files' with an appropriate file-upload mechanism if needed.
+            if files is None:
+                raise Exception("File upload is only supported in a Colab environment. Please choose option 2 or adjust accordingly.")
+            print("Please upload your video or audio file:")
+            uploaded = files.upload()
+            # Get the first (and expected only) file name from the uploaded files.
+            filename = list(uploaded.keys())[0]
+        elif option == "2":
+            youtube_link = input("Please paste the YouTube link: ").strip()
+            # Call the helper function to download the video.
+            filename = download_youtube_video(youtube_link, output_path="/home/ubuntu/downloads")
+            if filename is None:
+                print("Failed to download video from YouTube. Exiting.")
+                continue
+            else:
+                print("Download successful. File saved as:", filename)
+        elif option == "3":
+            youtube_link, link_path = get_next_link()
+            if youtube_link is None:
+                print("No more links found in Newlinks directory. Exiting.")
+                break 
+
+            # --- Start of Option 3 specific logic ---
+            print(f"Processing link from Newlinks: {youtube_link}")
+            downloaded_video_path = None
+            transcript_text = None
+            myfile = None # Initialize myfile
+
+            try:
+                downloaded_video_path = download_youtube_video(youtube_link, output_path="/home/ubuntu/downloads")
+
+                if downloaded_video_path:
+                    print(f"Successfully downloaded: {downloaded_video_path}")
+                    
+                    myfile = genai.upload_file(downloaded_video_path)
+                    print(f"Uploaded file {downloaded_video_path} to Gemini as {myfile.name}. Checking status...")
+
+                    start_time = time.time()
+                    max_delay = 120 
+                    while True:
+                        current_file_status = genai.get_file(myfile.name).state.name
+                        print(f"Current file state for {myfile.name}: {current_file_status}. Waiting for file to become ACTIVE...")
+                        if current_file_status == "ACTIVE":
+                            print(f"File {myfile.name} is ACTIVE.")
+                            break
+                        if current_file_status == "FAILED":
+                            print(f"File {myfile.name} processing FAILED on Gemini.")
+                            raise Exception(f"Gemini file processing failed for {myfile.name}") 
+                        if time.time() - start_time > max_delay:
+                            raise Exception(f"File {myfile.name} did not become ACTIVE within {max_delay}s. Last state: {current_file_status}")
+                        time.sleep(10)
+                    
+                    model_for_transcript = genai.GenerativeModel("gemini-2.0-flash") # Ensure model is defined here
+                    prompt_for_transcript = "Generate a transcript of the speech in this audio/video file. Only provide the transcript, without any additional commentary."
+                    
+                    result = generate_transcript_with_retries(model_for_transcript, myfile, prompt_for_transcript)
+                    transcript_text = result.text
+                    print("Transcript generated successfully.")
+                else:
+                    print(f"Failed to download video for link: {youtube_link}")
+                    # This path will lead to transcript_text being None, handled below.
+
+            except Exception as e:
+                print(f"An error occurred during download or transcript generation for {youtube_link}: {e}")
+                # Error already printed, transcript_text will remain None or be the error object if not string.
+            
+            finally:
+                if myfile:
+                    try:
+                        genai.delete_file(myfile.name)
+                        print(f"Deleted uploaded file {myfile.name} from Gemini.")
+                    except Exception as e_del:
+                        print(f"Error deleting file {myfile.name} from Gemini: {e_del}")
+                if downloaded_video_path and os.path.exists(downloaded_video_path):
+                    os.remove(downloaded_video_path)
+                    print(f"Cleaned up downloaded file: {downloaded_video_path}")
+
+            if transcript_text and isinstance(transcript_text, str): # Ensure transcript_text is a string
+                new_video_title, script = None, None
+                try:
+                    new_video_title, script = generate_script_from_video(transcript_text)
+                except Exception as e:
+                    print(f"Error generating script from video transcript for {youtube_link}: {e}")
+
+                if new_video_title and script:
+                    print(f"Generated Script for {new_video_title}")
+                    
+                    # Log the original transcript from the YouTube video
+                    log_transcript(transcript_text, new_video_title)
+                    print(colored("Original transcript logged successfully.", "green"))
+
+                    # Call the refactored function
+                    try:
+                        await process_generated_content(new_video_title, script, "WellnessGram", "option3")
+                        
+                        # If process_generated_content is successful, then move the link
+                        if os.path.exists(link_path): # link_path is new_links_file from get_next_link()
+                            with open(link_path, 'r') as file:
+                                lines = file.readlines()
+                            if lines:
+                                used_links_file = "/home/ubuntu/crewgooglegemini/AUTO/Usedlinks.txt"
+                                ensure_folder_exists(os.path.dirname(used_links_file)) # Ensure dir exists
+                                if not os.path.exists(used_links_file): # Ensure file exists
+                                     with open(used_links_file, 'w') as f: pass
+
+                                with open(used_links_file, 'a') as used_file:
+                                    used_file.write(youtube_link + '\n') # Write the specific link processed
+                                
+                                with open(link_path, 'w') as new_file:
+                                    new_file.writelines(lines[1:]) 
+                                print(f"Moved processed link {youtube_link} from {link_path} to {used_links_file}")
+                        else:
+                            print(f"Warning: {link_path} not found, cannot manage link movement.")
+
+                    except Exception as e_process:
+                        print(f"Error during 'process_generated_content' for {new_video_title} (link: {youtube_link}): {e_process}")
+                        print(f"Moving link {youtube_link} to checklink.txt due to processing error.")
+                        check_links_file = "/home/ubuntu/crewgooglegemini/AUTO/checklink.txt" # Define if not global
+                        ensure_folder_exists(os.path.dirname(check_links_file))
+                        if not os.path.exists(check_links_file):
+                             with open(check_links_file, 'w') as f: pass
+                        with open(check_links_file, 'a') as check_file:
+                            check_file.write(youtube_link + '\n')
+                        # Remove from Newlinks.txt
+                        if os.path.exists(link_path):
+                            with open(link_path, 'r') as file: lines = file.readlines()
+                            with open(link_path, 'w') as file: file.writelines(lines[1:])
+                else: # Script generation failed
+                    print(f"Failed to generate script for {youtube_link}. Moving to checklink.txt.")
+                    check_links_file = "/home/ubuntu/crewgooglegemini/AUTO/checklink.txt"
+                    ensure_folder_exists(os.path.dirname(check_links_file))
+                    if not os.path.exists(check_links_file):
+                         with open(check_links_file, 'w') as f: pass
+                    with open(check_links_file, 'a') as check_file:
+                        check_file.write(youtube_link + '\n')
+                    if os.path.exists(link_path):
+                        with open(link_path, 'r') as file: lines = file.readlines()
+                        with open(link_path, 'w') as file: file.writelines(lines[1:])
+
+            else: # Transcript generation failed or download failed
+                print(f"Transcript generation or download failed for {youtube_link}. Moving to checklink.txt.")
+                check_links_file = "/home/ubuntu/crewgooglegemini/AUTO/checklink.txt"
+                ensure_folder_exists(os.path.dirname(check_links_file))
+                if not os.path.exists(check_links_file):
+                    with open(check_links_file, 'w') as f: pass
+                with open(check_links_file, 'a') as check_file:
+                    check_file.write(youtube_link + '\n')
+                if os.path.exists(link_path): # link_path is new_links_file
+                    with open(link_path, 'r') as file:
+                        lines = file.readlines()
+                    with open(link_path, 'w') as file:
+                        file.writelines(lines[1:]) # Remove the failed link
+
+            print("Option 3 processing for current link finished. Ready for next iteration or option.")
+            time.sleep(3)
+            # No explicit 'continue' here as it's inside the main while True, so it will loop.
+            # The original 'break' for youtube_link is None is kept.
+
+        elif option == "4":
+            print("Processing Option 4: Bible Stories")
+            bible_txt_json = "/home/ubuntu/crewgooglegemini/AUTO/BiblestoriesTxt.json"
+            used_txtfiles_json = "/home/ubuntu/crewgooglegemini/AUTO/used_txtfiles.json"
+            bible_links_file = "/home/ubuntu/crewgooglegemini/AUTO/Biblelinks.txt"
+            used_bible_links_file = "/home/ubuntu/crewgooglegemini/AUTO/Usedbiblelinks.txt"
+            failed_bible_links_file = "/home/ubuntu/crewgooglegemini/AUTO/checklink.txt"
+        
+            # Ensure all link files exist or are created (touched)
+            for f_path in [bible_links_file, used_bible_links_file, failed_bible_links_file]:
+                if not os.path.exists(f_path):
+                    with open(f_path, 'w') as f:
+                        pass  # Create empty file if it doesn't exist
+        
+            # Load stories from JSON (as list of strings)
+            try:
+                with open(bible_txt_json, 'r', encoding='utf-8') as f:
+                    bible_stories = json.load(f)
+            except Exception as e:
+                print(f"Error loading Bible stories JSON: {e}")
+                bible_stories = []
+        
+            # Load used stories (if any)
+            try:
+                with open(used_txtfiles_json, 'r', encoding='utf-8') as f:
+                    used_stories = json.load(f)
+            except:
+                used_stories = []
+        
+            # Find next unused story
+            # Find next unused story
+            next_story = None
+            for story in bible_stories:
+                if story not in used_stories:
+                    next_story = story
+                    break
+        
+            if next_story:
+                print("Next Bible Story Selected:")
+                print(next_story)
+        
+                new_video_title, script = None, None
+                if next_story.strip():  # Ensure content is not empty
+                    try:
+                        new_video_title, script = generate_biblical_script(next_story)
+                    except Exception as e:
+                        print(f"Error generating biblical script from TXT: {e}")
+                else:
+                    print(f"JSON story is empty. Skipping script generation.")
+        
+                if new_video_title and script:
+                    try:
+                        await process_generated_content(new_video_title, script, "WellnessGram", "option4_txt")
+                        # Only now mark as used!
+                        used_stories.append(next_story)
+                        with open(used_txtfiles_json, 'w', encoding='utf-8') as f:
+                            json.dump(used_stories, f, indent=2)
+                        print(f"Marked story as used in {used_txtfiles_json}")
+                    except Exception as e:
+                        print(f"Error during 'process_generated_content' for story: {e}")
+                        # Optionally log to a failed list here
+                else:
+                    print("Failed to generate script from JSON story or story was empty. Skipping processing.")
+                    # Optionally log to a failed list here
+                
+                time.sleep(3)
+                continue # Restart main loop
+            else:
+                print("No new text files found in BiblestoriesTxt. Checking Biblelinks.txt...")
+
+            # --- Bible Links File Processing Logic (Fallback) ---
+            if not os.path.exists(bible_links_file):
+                print(f"{bible_links_file} not found. Cannot process Bible links.")
+                time.sleep(3)
+                continue
+
+            bible_links = []
+            try:
+                with open(bible_links_file, 'r') as f:
+                    bible_links = [line.strip() for line in f if line.strip()]
+            except Exception as e:
+                print(f"Error reading {bible_links_file}: {e}")
+                time.sleep(3)
+                continue
+
+
+            if not bible_links:
+                print("No links found in Biblelinks.txt. Option 4 processing complete for now.")
+                
+                time.sleep(3)
+                # Setting first_run to True will show menu again, or just break/continue
+                # For now, let's continue to allow other options or auto-cycling if implemented
+                continue
+
+            youtube_link = bible_links[0]
+            print(f"Processing Bible link: {youtube_link}")
+            
+            downloaded_video_path = None # Initialize
+            try:
+                downloaded_video_path = download_youtube_video(youtube_link, output_path="/home/ubuntu/downloads")
+
+                if downloaded_video_path:
+                    print(f"Successfully downloaded: {downloaded_video_path}")
+                    myfile = None 
+                    transcript_text = None
+                    try: 
+                        myfile = genai.upload_file(downloaded_video_path)
+                        
+                        start_time = time.time()
+                        max_delay = 120 
+                        while True:
+                            # myfile.state (or myfile.state.name) is the correct attribute based on google-generativeai documentation
+                            # However, the original code had myfile.status.upper() and the prompt had myfile.state.name
+                            # Let's use myfile.state.name as per the prompt's most recent version of this logic
+                            current_state = genai.get_file(myfile.name).state.name # Always fetch the latest state
+                            print(f"Current file state for {myfile.name}: {current_state}. Waiting for file to become ACTIVE...")
+                            if current_state == "ACTIVE":
+                                print(f"File {myfile.name} is ACTIVE.")
+                                break
+                            if current_state == "FAILED":
+                                print(f"File {myfile.name} processing FAILED on Gemini.")
+                                myfile = None # Mark as failed
+                                break
+                            if time.time() - start_time > max_delay:
+                                print(f"File {myfile.name} did not become ACTIVE or FAILED within {max_delay}s. Last state: {current_state}")
+                                myfile = None # Mark as failed due to timeout
+                                break
+                            time.sleep(10)
+
+                        if myfile and myfile.state.name == "ACTIVE": # Check again after loop
+                            model = genai.GenerativeModel("gemini-2.0-flash") 
+                            prompt_transcript = "Generate a transcript of the speech in this audio/video file. Only provide the transcript, without any additional commentary."
+                            try:
+                                result = generate_transcript_with_retries(model, myfile, prompt_transcript)
+                                transcript_text = result.text
+                                print("Transcript generated for link.")
+                            except Exception as e:
+                                print(f"Error generating transcript for {youtube_link}: {e}")
+                        else: # File did not become active or failed
+                             print(f"File upload processing for {downloaded_video_path} (link: {youtube_link}) did not result in an ACTIVE file. Current state: {current_state if 'current_state' in locals() else 'Unknown'}")
+
+
+                        if transcript_text:
+                            new_video_title, script = None, None
+                            try:
+                                new_video_title, script = generate_biblical_script(transcript_text)
+                            except Exception as e:
+                                print(f"Error generating biblical script from transcript for {youtube_link}: {e}")
+                            
+                            if new_video_title and script:
+                                try:
+                                    await process_generated_content(new_video_title, script, "WellnessGram", "option4_link")
+                                    
+                                    with open(used_bible_links_file, 'a') as ublf:
+                                        ublf.write(youtube_link + '\n')
+                                    print(f"Successfully processed and moved link {youtube_link} to {used_bible_links_file}")
+                                except Exception as e:
+                                    print(f"Error in process_generated_content for {youtube_link}: {e}. Moving to failed links.")
+                                    with open(failed_bible_links_file, 'a') as fblf:
+                                        fblf.write(youtube_link + '\n')
+                            else: # Script generation failed
+                                print(f"Failed to generate script for {youtube_link}. Moving to failed links.")
+                                with open(failed_bible_links_file, 'a') as fblf:
+                                    fblf.write(youtube_link + '\n')
+                        else: # Transcript generation failed or file not active
+                            print(f"Transcript generation failed or file not active for {youtube_link}. Moving to failed links.")
+                            with open(failed_bible_links_file, 'a') as fblf:
+                                fblf.write(youtube_link + '\n')
+                    
+                    finally: # Cleanup for Gemini file and local download
+                        if myfile: 
+                            try:
+                                genai.delete_file(myfile.name)
+                                print(f"Deleted uploaded file {myfile.name} from Gemini.")
+                            except Exception as e:
+                                print(f"Error deleting file {myfile.name} from Gemini: {e}")
+                        if downloaded_video_path and os.path.exists(downloaded_video_path): # Check path exists
+                            os.remove(downloaded_video_path)
+                            print(f"Cleaned up downloaded file: {downloaded_video_path}")
+                else: # Download failed
+                   print(f"Failed to download {youtube_link}. Moving to {failed_bible_links_file}.")
+                   with open(failed_bible_links_file, 'a') as fblf:
+                       fblf.write(youtube_link + '\n')
+                
+                # Remove processed/failed link from original bible_links_file for all cases (download fail, processing fail, success)
+                remaining_links = bible_links[1:]
+                with open(bible_links_file, 'w') as blf:
+                    for link_item in remaining_links: # Renamed variable to avoid conflict
+                        blf.write(link_item + '\n')
+                if not remaining_links:
+                    print(f"{bible_links_file} is now empty.")
+
+            except Exception as e: # Catch broader errors during download or outer try
+                print(f"An unexpected error occurred processing link {youtube_link}: {e}")
+                with open(failed_bible_links_file, 'a') as fblf:
+                    fblf.write(youtube_link + '\n')
+                # Ensure link is removed from main list even with unexpected error
+                if youtube_link in bible_links: # Check if it was loaded
+                    updated_links = [l for l in bible_links if l != youtube_link]
+                    with open(bible_links_file, 'w') as blf:
+                        for link_item in updated_links:
+                            blf.write(link_item + '\n')
+
+            
+            time.sleep(3)
+            continue # Continue to next main loop iteration
+
+        else: # This is the else for `if option == "1" / "2" / "3" / "4"`
+            print("Invalid option selected. Exiting.")
+            break
+
+        # Continue with further processing of the file (if needed).
+        print("Processing complete. Filename:", filename)
+
+
+        
+        # --- Step 2: Upload file to your generative model API and generate transcript ---
+        myfile = genai.upload_file(filename)
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        prompt = "Generate a transcript of the speech in this audio/video file. Only provide the transcript, without any additional commentary."
+        
+        retry_delay = 10
+        max_delay = 60
+        
+        # Wait for the file to become ACTIVE.
+        start_time = time.time()
+        while True:
+            # Assuming that the uploaded file object has a 'status' attribute.
+            # If not, you might need to call a method like genai.check_file_status(myfile) instead.
+            if hasattr(myfile, 'status'):
+                if myfile.status.upper() == "ACTIVE":
+                    print("File is ACTIVE.")
+                    break
+                else:
+                    print(f"Current file status: {myfile.status}. Waiting for file to become ACTIVE...")
+            else:
+                # If there's no status attribute, you might have a different mechanism to check status.
+                print("No status attribute found on myfile; assuming file is active.")
+                break
+        
+            if time.time() - start_time > max_delay:
+                print("File did not become ACTIVE within the maximum delay.")
+                # Handle as a transcript failure below
+                break
+            time.sleep(retry_delay)
+        
+        # --- Generate Transcript with Retry Logic ---
+        print("Generating transcript...")
+        try:
+            result = generate_transcript_with_retries(model, myfile, prompt, retries=10, delay=10)
+            print("Transcript:")
+            print(result.text)
+        except Exception as e:
+            print(f"An error occurred during transcript generation: {e}")
+            # Move the failed link to checklink.txt and remove from Newlinks.txt if youtube_link is defined
+            if 'youtube_link' in locals():
+                print("Moving link to checklink.txt and removing from Newlinks.txt.")
+                check_links_file = "/home/ubuntu/crewgooglegemini/AUTO/checklink.txt"
+                with open(check_links_file, 'a') as check_file:
+                    check_file.write(youtube_link + '\n')
+                # Remove the failed link from Newlinks.txt
+                new_links_file = "/home/ubuntu/crewgooglegemini/AUTO/Newlinks.txt"
+                with open(new_links_file, 'r') as file:
+                    lines = file.readlines()
+                with open(new_links_file, 'w') as file:
+                    file.writelines(lines[1:])  # Skip the first line (the failed link)
+                time.sleep(5)  # Optional: Add a delay before processing the next link
+                continue  # Go to the next link in your main loop
+            else:
+                print("No youtube_link found; not moving to checklink.txt.")
+            # If not processing from Newlinks, handle as needed (e.g., return, break, etc.)
+
+
+    
+        # Save transcript to a JSON file
+        transcript_data = {"transcript": result.text}
+        transcript_file = '/home/ubuntu/crewgooglegemini/001videototxt/input_transcripts.json'
+        with open(transcript_file, 'w') as f:
+            json.dump(transcript_data, f)
+        print(f"Transcript saved to {transcript_file}")
+    
+        time.sleep(5)
+    
+        # Read transcript from file (for debugging or further processing)
+        if not os.path.exists(transcript_file):
+            raise FileNotFoundError(f"Input transcript file not found at {transcript_file}")
+        with open(transcript_file, 'r') as f:
+            transcript_data = json.load(f)
+        if 'transcript' not in transcript_data:
+            raise KeyError("'transcript' key not found in input transcript JSON")
+    
+    # --- Step 3: Generate Script from Transcript ---
+        transcript_text = transcript_data['transcript']
+        new_video_title, script = generate_script_from_video(transcript_text)
+        if new_video_title and script:
+           # print(f"New Video Title: {new_video_title}")
+            print(f"Generated Script: {script}")
+            output_script_path = '/home/ubuntu/crewgooglegemini/001videototxt/output_transcript.json'
+            with open(output_script_path, 'w') as f:
+                json.dump({"script": script}, f)
+            print(f"Script generated and saved to {output_script_path}")
+            
+            # Log the transcript
+            log_transcript(transcript_text, new_video_title)
+            print(colored("Transcript logged successfully.", "green"))
+    
+    
+        # --- Step 4: Generate Audio ---
+        VOICE_OVER_FOLDER = "/home/ubuntu/crewgooglegemini/001videototxt/voice_over"
+        ensure_folder_exists(VOICE_OVER_FOLDER)
+        audio_path = os.path.join(VOICE_OVER_FOLDER, "voiceover.wav")
+        print("Generating audio...")
+        await generate_audio(script, audio_path)
+        print(f"Audio saved to {audio_path}")
+    
+        # --- Step 5: Transcribe Audio ---
+        print("Transcribing audio...")
+        transcription = transcribe_locally(audio_path)
+        print("Transcription completed.")
+        TRANSCRIPT_FOLDER = "/home/ubuntu/crewgooglegemini/001videototxt/transcripts"
+        ensure_folder_exists(TRANSCRIPT_FOLDER)
+        transcript_filename = os.path.join(TRANSCRIPT_FOLDER, f"{os.path.basename(audio_path).replace('.wav', '')}_transcription.txt")
+        with open(transcript_filename, 'w') as f:
+            if isinstance(transcription, list):
+                for segment in transcription:
+                    words_json = json.dumps(segment['words'], default=lambda x: float(x) if isinstance(x, np.float64) else x)
+                    f.write(f"{segment['start']} {segment['end']} {segment['text']} {words_json}\n")
+            else:
+                f.write(transcription)
+        print(f"Transcription saved to {transcript_filename}")
+    
+        segments = extract_transcript_segments(transcription)
+        print(f"Extracted {len(segments)} segments from the transcript.")
+    
+    
+        # --- Step 5b: Process transcript for image-video segments ---
+        print("Processing transcript for image-video segments...")
+        transcript_data = parse_transcript_file(transcript_filename)
+        segments_image_vid = extract_transcript_segments_image_vid(transcript_data)
+        
+        # Save the result to a JSON file in the same directory as the transcript
+        output_file = os.path.join(TRANSCRIPT_FOLDER, 'image_video.json')
+        with open(output_file, 'w') as f:
+            json.dump(segments_image_vid, f, indent=4)
+        
+        print(f"Image-video segments have been saved to {output_file}")
+        print(f"Extracted {len(segments_image_vid)} image-video segments from the transcript.")
+    
+      #-------------------------------------------------------------------------------------------  
+    
+        # --- Step 5c: Generate image prompts for segments ---
+        print("Generating image prompts for segments...")
+        
+        # Load the full transcript
+        full_transcript_file = '/home/ubuntu/crewgooglegemini/001videototxt/output_transcript.json'
+        with open(full_transcript_file, 'r') as f:
+            full_transcript = json.load(f)
+        
+        # Ensure full_transcript is a string
+        if isinstance(full_transcript, dict):
+            full_transcript = full_transcript.get('script', '')
+        elif not isinstance(full_transcript, str):
+            full_transcript = str(full_transcript)
+        
+        # Load the image-video segments
+        with open(output_file, 'r') as f:
+            segments = json.load(f)
+        
+        # Process segments in batches
+        batch_size = 5
+        image_prompts = []
+        
+        for i in range(0, len(segments), batch_size):
+            batch = segments[i:i+batch_size]
+            batch_prompts = generate_image_prompts_batch(batch, full_transcript)
+            image_prompts.extend(batch_prompts)
+            
+           # print(f"Processed batch {i//batch_size + 1} of {(len(segments)-1)//batch_size + 1}")
+        
+        # Save all generated prompts to current_prompt.json (overwrite existing data)
+        prompt_file = '/home/ubuntu/crewgooglegemini/current_prompt.json'
+        with open(prompt_file, 'w') as f:
+            json.dump(image_prompts, f, indent=4)
+        
+        print(f"Generated {len(image_prompts)} image prompts and saved to {prompt_file}")
+    #----------------------------------------------------------------------------------------------------------
+        # --- Step 5d: Generate images for each prompt ---
+        print(colored("Step 5d: Generating images for each prompt...", "cyan"))
+        process_and_generate_images()
+    #------------------------------------------------------------------------------------------------------------
+  # --- step5e: Call this function in your main script for Step 5e
+        step_5e_generate_video_clips()
+    
+    
+    
+        PIXABAY_FOLDER = "/home/ubuntu/crewgooglegemini/PIXABAY VIDEOS"
+        # CUSTOM_FOLDER = "/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/GameGuruHQ"
+        #CUSTOM_FOLDER = "/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/GoGlobeTv"
+        #CUSTOM_FOLDER = "/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/EntrepreneurGramTV"
+        #CUSTOM_FOLDER = "/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/HappyBabiesGram"
+        #CUSTOM_FOLDER = "/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/HealthWiseHQ"
+        #CUSTOM_FOLDER = "/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/Trendz-AI"
+        CUSTOM_FOLDER = "/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/WellnessGram"
+        #CUSTOM_FOLDER = "/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/MindfulSnapz"
+        #CUSTOM_FOLDER = "/home/ubuntu/crewgooglegemini/SHORTCLIPSFACTS/FashionzHype"
+    
+    
+        # Simulate video search and download
+        downloaded_videos, video_titles, durations = search_and_download_best_videos(PIXABAY_FOLDER, CUSTOM_FOLDER)
+        print(f"Downloaded {len(downloaded_videos)} videos.")
+        for i, (video_path, title, duration) in enumerate(zip(downloaded_videos, video_titles, durations), start=1):
+            print(f"Video {i}: {title} ({duration:.2f} seconds) at path: {video_path}")
+    
+        # --- Step 6: Concatenate Videos and Add Voice Over ---
+        video_segments = load_video_segments(TRANSCRIPT_FOLDER)
+        PIXABAY_FOLDER = "/home/ubuntu/crewgooglegemini/PIXABAY VIDEOS"
+        VOICE_OVER_FOLDER = "/home/ubuntu/crewgooglegemini/001videototxt/voice_over"
+        voice_over_file = os.path.join(VOICE_OVER_FOLDER, "voiceover.wav")
+    
+        print("Concatenating videos and adding voice over...")
+        video_clips = []
+        for i, (video_path, duration) in enumerate(zip(downloaded_videos, durations)):
+            clip = VideoFileClip(video_path)
+            if clip.duration > 0:
+                resized_clip = resize_video(clip, target_width=1080, target_height=1920, duration=duration)
+                if resized_clip.duration < duration:
+                    loop_count = int(duration // resized_clip.duration) + 1
+                    extended_clip = concatenate_videoclips([resized_clip] * loop_count)
+                    trimmed_clip = extended_clip.subclip(0, duration)
+                else:
+                    trimmed_clip = resized_clip.subclip(0, duration)
+                video_clips.append(trimmed_clip)
+            else:
+                print(f"Warning: Skipping empty clip {video_path}")
+        print(f"Number of clips to concatenate: {len(video_clips)}")
+        if len(video_clips) > 0:
+            final_clip = concatenate_videoclips(video_clips, method="compose")
+        else:
+            raise ValueError("No valid video clips available for concatenation.")
+    
+        audio = AudioFileClip(audio_path)
+        if final_clip.duration < audio.duration:
+            difference = audio.duration - final_clip.duration
+            print(f"Video is {difference:.2f} seconds shorter than the audio. Extending video.")
+            last_clip = video_clips[-1]
+            loops_needed = int(difference // last_clip.duration) + 1
+            extension_clip = concatenate_videoclips([last_clip] * loops_needed)
+            extension_clip = extension_clip.subclip(0, difference)
+            final_clip = concatenate_videoclips([final_clip, extension_clip], method="compose")
+        final_clip = final_clip.subclip(0, audio.duration)
+    
+       
+
+# ====  Step 7, add bg sound
+        
+        bg_sound = get_background_sound(audio.duration)
+    
+        combined_audio = CompositeAudioClip([audio, bg_sound])
+        final_clip = final_clip.set_audio(combined_audio)
+        print(f"Final video duration: {final_clip.duration:.2f} seconds")
+        print(f"Audio duration: {audio.duration:.2f} seconds")
+        fade_duration = 1  # seconds
+        final_clip = final_clip.fx(fadeout, duration=fade_duration)
+        final_audio = final_clip.audio.fx(audio_fadeout, duration=fade_duration)
+        final_clip = final_clip.set_audio(final_audio)
+    
+        # --- Step 7: Write Final Video and Add Captions ---
+        #output_dir = "/home/ubuntu/crewgooglegemini/001videototxt"
+        #output_dir = "/home/ubuntu/crewgooglegemini/FINALVIDEOS/GoGlobeTv"
+        #output_dir = "/home/ubuntu/crewgooglegemini/FINALVIDEOS/HappyBabiesGram"
+        #output_dir = "/home/ubuntu/crewgooglegemini/FINALVIDEOS/HealthWiseHQ"
+        #output_dir = "/home/ubuntu/crewgooglegemini/FINALVIDEOS/Trendz-AI"
+        output_dir = "/home/ubuntu/crewgooglegemini/FINALVIDEOS/WellnessGram"
+        #output_dir = "/home/ubuntu/crewgooglegemini/FINALVIDEOS/MindfulSnapz"
+        #output_dir = "/home/ubuntu/crewgooglegemini/FINALVIDEOS/EntrepreneurGramTV"
+        #output_dir = "/home/ubuntu/crewgooglegemini/FINALVIDEOS/FashionzHype"
+
+        safe_title = make_safe_filename(new_video_title)
+
+        os.makedirs(output_dir, exist_ok=True)
+        intermediate_output = os.path.join(output_dir, f"{safe_title}_intermediate_video_with_audio.mp4")
+        final_clip.write_videofile(
+            intermediate_output,
+            codec="libx264",
+            audio_codec="aac",
+            ffmpeg_params=[
+                '-pix_fmt', 'yuv420p',
+                '-preset', 'medium',
+                '-crf', '23',
+                "-bufsize", "16M",
+                "-maxrate", "8M",
+                '-profile:v', 'high'
+            ],
+            threads=8,
+            verbose=False
+        )
+    
+        output_file_path = os.path.join(output_dir, f"{safe_title}.mp4")
+        add_captions(
+            video_file=intermediate_output,
+            output_file=output_file_path,
+            font="Bangers-Regular.ttf",
+            font_size=80,
+            font_color="yellow",
+            stroke_width=3,
+            stroke_color="black",
+            highlight_current_word=True,
+            word_highlight_color="red",
+            line_count=2,
+            padding=50,
+            shadow_strength=1.0,
+            shadow_blur=0.1,
+            print_info=True,
+            segments=video_segments  # Pass the loaded video segments directly
+        )
+    
+        # Remove the intermediate file if desired
+        if os.path.exists(intermediate_output):
+            os.remove(intermediate_output)
+        # Remove all .mp4 files from the active CUSTOM_FOLDER
+        if os.path.exists(CUSTOM_FOLDER):
+            for file in os.listdir(CUSTOM_FOLDER):
+                if file.endswith(".mp4"):
+                    file_path = os.path.join(CUSTOM_FOLDER, file)
+                    os.remove(file_path)
+                    #print(f"Removed: {file_path}")
+        print(f"Final video with captions saved as {output_file_path}")
+        time.sleep(2)
+        clear_output(wait=True)
+        time.sleep(3)
+    
+        # Step 5f: Send final video and transcript to Telegram
+        step_5f_send_to_telegram()
+        time.sleep(3)
+
+        # Call step_5g_upload_to_google_drive to upload the latest video and transcript
+        step_5g_upload_to_google_drive()
+        time.sleep(3)
+    
+        if option == "3":
+            new_links_file = "/home/ubuntu/crewgooglegemini/AUTO/Newlinks.txt"
+            used_links_file = "/home/ubuntu/crewgooglegemini/AUTO/Usedlinks.txt"
+            
+            with open(new_links_file, 'r') as file:
+                lines = file.readlines()
+            
+            if lines:
+                with open(used_links_file, 'a') as used_file:
+                    used_file.write(lines[0])
+                
+                with open(new_links_file, 'w') as new_file:
+                    new_file.writelines(lines[1:])
+                
+                print(f"Moved processed link to Usedlinks.txt")
+            
+            print("Processing complete. Ready for next iteration.")
+
+
+
+# ---------------------------------------------------------------------------
+# Run the main function
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    try:
+        import nest_asyncio
+        nest_asyncio.apply()  # For nested asyncio loops in Colab or Jupyter
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(main())
+    except Exception as e:
+        print(f"An error occurred: {e}")
